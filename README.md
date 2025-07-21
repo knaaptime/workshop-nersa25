@@ -11,12 +11,13 @@ NERSA/NARSC Program in Mobility, Migration & Regional Science
 
 To run locally:
 
+- install [pixi](https://pixi.sh/dev/installation/)
 - clone this repository, follow below
 
 To run in codespaces:
 
 - click the 'open in codespaces' button above
-  - the default config will include at least 4 cores (dont go below 16gb memory), but you can crank it up for better performance
+  - the default config will include at least 8 cores (dont go below 32gb memory), but you can crank it up for better performance
 
 - `pixi install`
 - `pixi run jupyter lab`
