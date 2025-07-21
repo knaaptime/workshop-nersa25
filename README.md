@@ -5,6 +5,9 @@ NERSA/NARSC Program in Mobility, Migration & Regional Science
 
 **Instructor**: Elijah Knaap, University of California-Irvine
 
+[![Open in GitHub Codespaces](https://github.com/codespaces/badge.svg)](https://codespaces.new/knaaptime/workshop-nersa25)
+
+
 ## Overview
 
 - spatial data and analysis in python
