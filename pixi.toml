@@ -1,0 +1,31 @@
+[workspace]
+channels = ["conda-forge"]
+name = "nersa25"
+platforms = ["osx-arm64"]
+version = "0.1.0"
+
+[tasks]
+
+[dependencies]
+python = ">=3.12"
+jupyterlab = "*"
+pandas = ">=2.0"
+watermark = "*"
+seaborn = "*"
+geosnap = ">=0.15.1"
+geopandas = ">=1"
+mapclassify = ">=2.8.1"
+pysal = "*"
+libpysal = ">=4.9.2"
+statsmodels = "*"
+pandana = ">=0.7"
+osmnx = ">=2.0"
+jupyter-black = "*"
+choicemodels = "*"
+jupyterlab_code_formatter = "*"
+h3-py = "*"
+splot = ">=1.1.7"
+lonboard = "*"
+pyarrow = "*"
+formulaic = "*"
+quarto = "*"

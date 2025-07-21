@@ -1,0 +1,1020 @@
+# The Spatial `Graph` {#sec-graphs}
+
+In formal spatial models, we need a way of defining relationships between
+observations. In the spatial analysis and econometrics literature, the data
+structure used to relate observations to one another is canonically called a
+*spatial weights matrix*, or $W$, and is used to specify the hypothesized
+interaction structure that may exist between spatial units
+[@getis2009SpatialWeights]. These relationships between units form a
+special kind of network graph embedded in geographical space, and using the
+`libpysal.graph` module, we can explore these relationships in depth.
+
+```{python}
+%load_ext jupyter_black
+%load_ext watermark
+%watermark -v -a "author: eli knaap" -d -u -p libpysal
+```
+
+Note: the `Graph` class is only available in versions of libpysal >=4.9 (on
+versions prior to that, you need to use the `W` class, which works a little
+differently).
+
+```{python}
+
+import contextily as ctx
+import matplotlib.pyplot as plt
+import pandas as pd
+import geopandas as gpd
+import networkx as nx
+import osmnx as ox
+import pandana as pdna
+
+from geosnap import DataStore
+from geosnap import io as gio
+from libpysal.graph import Graph
+
+datasets = DataStore()
+```
+
+The graph will use the geodataframe index to identify unique observations, so
+when we have something meaningful (like a FIPS code) that serves as an "id
+variable", then we should set that as the index.
+
+```{python}
+dc = gio.get_acs(datasets, state_fips="11", years=2021)
+dc = dc.to_crs(dc.estimate_utm_crs())
+dc = dc.set_index("geoid")
+dc.plot()
+```
+
+
+The most common way of creating a spatial interaction graph is by "building" one
+from an existing geodataframe. The `libpysal.graph.Graph` class has a several
+methods available to generate these relationships, all of which use the
+`Graph.build_*` convention.
+
+## Contiguity Graphs
+
+A contiguity graph assumes observations have a relationship when they share an edge and/or vertex.
+
+### Rook
+
+```{python}
+g_rook = Graph.build_contiguity(dc)
+g_rook.n
+```
+
+the number of observations in our graph should match the number of rows in the
+dataframe from which it was constructed.
+
+```{python}
+dc.shape[0]
+```
+
+One way to interact with the graph structure directly is to use the `adjacency`
+attribute which returns the neighbor relationships as a multi-indexed pandas
+series.
+
+```{python}
+g_rook.adjacency
+```
+
+```{python}
+g_rook.adjacency.reset_index()
+```
+
+"Slicing" into a `Graph` object returns a pandas series where the index is the
+neighbor's id/key and the value is the "spatial weight" that encodes the
+strengrth of the connection between observations.
+
+```{python}
+g_rook["110019800001"]
+```
+
+Note this is shorthand for slicing into the adjacency list itself
+
+```{python}
+g_rook.adjacency.loc["110019800001"]
+```
+
+If you prefer, the `neighbors` and `weights` values are also encoded as
+dictionaries on the Graph, available under the corresponding attributes.
+
+```{python}
+g_rook.neighbors["110019800001"]
+```
+
+```{python}
+g_rook.weights["110019800001"]
+```
+
+The `cardinalities` attribute stores the number of connections/relationships for
+each observation. In graph terminology, that would be the number of edges for
+each node, and in simple terms, this is the number of neighbors for each unit of
+analysis
+
+```{python}
+g_rook.cardinalities
+```
+
+```{python}
+g_rook.cardinalities.describe()
+```
+
+We can get a sense for what the neighbor distribution looks like by plotting a histogram of the cardinalities
+
+```{python}
+g_rook.cardinalities.hist()
+```
+
+The attribute `pct_nonzero` stores the share of entries in the $n \times n$
+connectivity matrix that are non-zero. If every observation were connected to
+every other observation, this attribute would equal 1
+
+```{python}
+g_rook.pct_nonzero
+```
+
+In this graph, less than 1% of the entries in that matrix are non-zero, showing
+that this is a very sparse connectivity graph indeed. Note, to compute the
+`pct_nonzero` measure ourselves, we vould alternatively rely on properties of
+the graph:
+
+```{python}
+(g_rook.n_edges / g_rook.n_nodes**2) * 100
+```
+
+To see the full $n \times n$ matrix representation of the graph, the sparse
+(scipy) representation is available under the `sparse` attribute
+
+```{python}
+g_rook.sparse
+```
+
+```{python}
+g_rook.sparse.todense()
+```
+
+To see the dense version, just convert from sparse to dense using scipy
+conventions. Both rows and columns of the matrix representation are ordered as
+found in the geodataframe from which the Graph was constructed (or in the order
+given, when using a `_from_*` method). Currently this order is stored under the
+`unique_ids` attribute.
+
+```{python}
+g_rook.unique_ids
+```
+
+```{python}
+g_rook.unique_ids.equals(dc.index)
+```
+
+Summing across rows of the matrix is another way to count neighbors for each observation
+
+```{python}
+g_rook.sparse.todense().sum(axis=1)[:20].astype(int)
+```
+
+```{python}
+g_rook.cardinalities.values[:20]
+```
+
+Classic spatial connectivity graphs are typically very sparse. That is, we
+generally do not consider every observation to have a relationship with every
+other observation. Rather, we tend to encode relationships such that
+observations are influenced *directly* by other observations that are nearby in
+physical space. But because nearby observations also interact with *their*
+neighbors, it is possible for an influence from one observation to influence
+another observation far away by traversing the graph.
+
+One useful way to understand how the Graph encodes spatial relationships is to
+use the `plot` method, which embeds the graph in planar space showing how
+observations are connected to one another. In the default plot, each observation
+(or its centroid, if the observations are polygons) is shown as a dot (or *node*
+in graph terminology), and a line (or *edge*) is drawn between nodes that are
+connected. Since we are using a rook contiguity rule, the edge, here, indicates
+that the observations share a common border.
+
+```{python}
+ax = g_rook.plot(dc, node_kws=dict(alpha=0.4), edge_kws=dict(alpha=0.4), figsize=(7, 8))
+ctx.add_basemap(ax, source=ctx.providers.CartoDB.Positron, crs=dc.crs)
+ax.axis("off")
+```
+
+The `explore` method creates an interactive webmap version of the same plot, though the arguments are a bit different. 
+
+```{python}
+m = dc.explore(tiles="CartoDB Positron", tooltip=["geoid"])
+g_rook.explore(
+    dc,
+    m=m,
+)
+```
+
+```{python}
+cap = gpd.tools.geocode("the national mall, washington d.c.").to_crs(dc.crs)
+```
+
+```{python}
+cap
+```
+
+The national gallery of art is not exactly the national mall, but it is close enough
+
+```{python}
+cap.explore(tiles="CartoDB Positron", marker_kwds=dict(radius=20), zoom_start=15)
+```
+
+```{python}
+mall = gpd.overlay(cap, dc.reset_index())
+```
+
+Using an overlay operation from geopandas, we can collect the geoid we need to
+select from the Graph. For each observation in `cap`, the overlay will return
+the observations from `dc` that meet the spatial predicate (the default is
+intersect). (we reset the index here because we need to get the 'geoid' from the
+dataframe)
+
+```{python}
+mall
+```
+
+```{python}
+mall_id = mall.geoid.tolist()[0]
+```
+
+```{python}
+mall_id
+```
+
+Since the graph encodes the notion of a "neighborhood" for each unit, it can be
+a useful way of selecting (and visualizing) "neighborhoods" around a particular
+observation. For example here are all the blockgroups that neighbor the
+~~National Mall~~ national gallery of art (well, the blockgroup that contains
+the national gallery of art)
+
+```{python}
+m = dc.loc[[mall_id]].explore(color="red", tooltip=None, tiles="CartoDB Positron")
+dc.loc[g_rook[mall_id].index].explore(m=m, tooltip=None)
+```
+
+Since blockgroups vary in size, and the national mall is in an oddly shaped
+blockgroup, its neighbor set includes blockgroups from Georgetown (Northwest),
+to Capitol Hill (Northeast), to Anacostia (Southeast)...
+
+When plotting the graph, it is also possible to select subsets and/or style
+nodes and edges differently. Here we can contrast the neighborhood structure for
+the blockgroup containing the national mall versus another blockgroup near rock
+creek park. Passing those two indices (in a list) to the `focal` argument will
+plot only the subgraph for those two nodes.
+
+```{python}
+m = dc.explore(tiles="CartoDB Positron", tooltip=["geoid"])
+g_rook.explore(
+    dc,
+    m=m,
+    focal=["110019800001", "110010020012"],
+    edge_kws=dict(color="red"),
+    node_kws=dict(style_kwds=dict(radius=4, color="yellow")),
+)
+```
+
+Since the relationship graph is just a specific kind of network, we can also
+export directly to NetworkX, e.g. to leverage other graph theoretic measures.
+For example we could compute the degree of each node in the network and plot its
+distribution
+
+```{python}
+nxg = g_rook.to_networkx()
+```
+
+```{python}
+pd.Series([i[1] for i in nxg.degree()]).hist()
+```
+
+And here it is easy to see that the degree of each node is the number of
+neighbors (which is the same as the cardinalities attribute of the original
+libpysal graph)
+
+
+### Queen
+
+```{python}
+g_queen = Graph.build_contiguity(dc, rook=False)
+```
+
+Since the 'queen' rule is more liberal and allows connections through the
+vertices as well as the edges, we would expect that each observation would have
+more neighbors, shifting our cardinality histogram to the right, and densifying
+the graph.
+
+```{python}
+g_queen.pct_nonzero
+```
+
+```{python}
+g_rook.pct_nonzero
+```
+
+```{python}
+g_queen.cardinalities.rename("queen").plot(
+    kind="hist", legend=True, alpha=0.6, bins=range(32)
+)
+g_rook.cardinalities.rename("rook").plot(
+    kind="hist", legend=True, alpha=0.6, bins=range(32)
+)
+```
+
+Or the kernel density continuous estimate
+
+```{python}
+g_queen.cardinalities.rename("queen").plot(kind="density", legend=True)
+g_rook.cardinalities.rename("rook").plot(kind="density", legend=True)
+```
+
+Ultimately, though, the structure of the graph has not changed that
+substantially. If we plot both figures and scrutinize them side-by-side, a
+handful of differences emerge, but not many.
+
+```{python}
+f, ax = plt.subplots(1, 2, figsize=(12, 8))
+ax = ax.flatten()
+
+g_rook.plot(
+    dc, ax=ax[0], node_kws=dict(alpha=0.4, s=3), edge_kws=dict(alpha=0.4)
+).set_title("rook", fontsize=20)
+
+g_queen.plot(
+    dc, ax=ax[1], node_kws=dict(alpha=0.4, s=3), edge_kws=dict(alpha=0.4)
+).set_title("queen", fontsize=20)
+
+for ax in ax:
+    ax.axis("off")
+    ctx.add_basemap(ax, source=ctx.providers.CartoDB.Positron, crs=dc.crs)
+plt.tight_layout()
+```
+
+The Queen graph subsumes the Rook graph, so if we plot the queen relationships
+beneath the rook relationships in a different color, then the colors still
+visible underneath show the difference between queen and rook graphs
+
+```{python}
+ax = dc.plot(alpha=0.4, color="lightgrey", figsize=(7, 8), edgecolor="black")
+ax = g_queen.plot(dc, ax=ax, nodes=False, edge_kws=dict(color="blue"), figsize=(7, 8))
+
+g_rook.plot(dc, ax=ax, nodes=False, edge_kws=dict(color="red"))
+
+ax.axis("off")
+ctx.add_basemap(ax, source=ctx.providers.CartoDB.Positron, crs=dc.crs)
+```
+
+
+Anything visible in blue is a connection through a vertex. But there is also a
+better way to do this...
+
+### Bishop Weights
+
+In theory, a "Bishop" weighting scheme is one that arises when only polygons
+that share vertexes are considered to be neighboring. But, since Queen
+contiguigy requires either an edge or a vertex and Rook contiguity requires only
+shared edges, the following relationship is true:
+
+$$ \mathcal{Q} = \mathcal{R} \cup \mathcal{B} $$
+
+where $\mathcal{Q}$ is the set of neighbor pairs *via* queen contiguity,
+$\mathcal{R}$ is the set of neighbor pairs *via* Rook contiguity, and
+$\mathcal{B}$ *via* Bishop contiguity. Thus:
+
+$$ \mathcal{Q} \setminus \mathcal{R} = \mathcal{B}$$
+
+Bishop weights entail all Queen neighbor pairs that are not also Rook neighbors.
+
+PySAL does not have a dedicated bishop weights constructor, but you can
+construct very easily using the `difference` method. Other types of set
+operations between Graph objects are also available. This is the more important
+point than actually constructing Bishop weights (which encode an odd interaction
+structure in the social sciences and are essentially never used in practice).
+Combining `Graph` objects using set operations allows flexible composability.
+
+```{python}
+bishop = g_queen.difference(g_rook)
+```
+
+These are the connections that are shown in blue above
+
+```{python}
+m = dc.explore(
+    tooltip=None,
+    style_kwds=dict(color="black", fill=False),
+    tiles="CartoDB Positron",
+)
+bishop.explore(
+    dc, m=m, nodes=True, edge_kws=dict(color="purple", style_kwds=dict(weight=5))
+)
+```
+
+## Distance Graphs
+
+### Distance-Band
+
+When building a graph based on distance relationships, we need to make a simple
+assumption: since the distance between two polygons is undefined (is it the
+distance between the nearest point of each polygon? the furthest points? the
+average?), we use the polygon centroid as it's representation. The centroid is
+the geometric center of each polygon, so it serves as a reasonable approximation
+for the "average" distance of the poygon. Note that when building a distance
+band, the `threshold` argument is measured in units defined by the coordinate
+reference system (CRS) of the input dataframe. Here, we are using a UTM CRS,
+which means our units are measured in meters, so these graphs correspond to 1km
+and 2km thresholds.
+
+```{python}
+dc.crs
+```
+
+```{python}
+# | label: fig-increasing-dist-graph
+# | fig-cap: "`Graph` with Increasing Distance Band"
+
+g_dist_500 = Graph.build_distance_band(dc.centroid, threshold=500)
+g_dist_1000 = Graph.build_distance_band(dc.centroid, threshold=1000)
+g_dist_2000 = Graph.build_distance_band(dc.centroid, threshold=2000)
+g_dist_3000 = Graph.build_distance_band(dc.centroid, threshold=3000)
+
+f, ax = plt.subplots(2, 2, figsize=(8, 10))
+gs = [g_dist_500, g_dist_1000, g_dist_2000, g_dist_3000]
+labels = ["500 m", "1 km", "2 km", "3 km"]
+ax = ax.flatten()
+
+for i in range(len(ax)):
+    gs[i].plot(
+        dc, ax=ax[i], node_kws=dict(alpha=0.4, s=2), edge_kws=dict(alpha=0.4)
+    ).set_title(labels[i], fontsize=14)
+
+    ax[i].axis("off")
+    ctx.add_basemap(ax[i], source=ctx.providers.CartoDB.Positron, crs=dc.crs)
+plt.tight_layout()
+```
+
+Naturally, distance-based relationships are sensitive to the density of
+observations in space. Since the distance threshold is fixed, denser locations
+will necessarily have more neighbors, whereas sparse locations may have few or
+no neighbors (e.g. the three observations in southeast DC in the 1km graph).
+This can be a useful property of distance-band graphs, because it keeps the
+notion of 'neighborhood' fixed across observations, and in many cases it makes
+sense for density to increase the neighbor set.
+
+```{python}
+bins = range(0, 120)
+g_dist_500.cardinalities.rename("500m").hist(alpha=0.6, legend=True, bins=bins)
+g_dist_1000.cardinalities.rename("1km").hist(alpha=0.5, legend=True, bins=bins)
+g_dist_2000.cardinalities.rename("2km").hist(alpha=0.4, legend=True, bins=bins)
+```
+
+As the distance band increases, the neighbor distribution becomes more
+dispersed. In graphs with the smallest bandwidths, there are places in the study
+region with observations that fail to capture any neighbors (within the 500m and
+1km thresholds), which creates disconnections in the graph. The different
+connected regions of the graph are called components, and it can be useful to
+know about them for a few reasons.
+
+First, if there is more than one component, it implies that the interaction
+structure in the study region is segmented. Disconnected components in the graph
+make it impossible, by definition, for a shock (innovation, message, etc) to
+traverse the graph from a node in one component to a node in another component.
+This situation has implications for certain applications such as spatial
+econometric modeling because certain conditions (like higher-order neighbors)
+may not exist.
+
+If a study region contains multiple disconnected components, this information
+can also be used to partition or inspect the dataset. For example, if the region
+has multiple portions (e.g. Los Angeles and the Channel Islands, or the Hawaiian
+Islands, or Japan), then the component labels can be used to select groups of
+observations that belong to each component
+
+```{python}
+g_dist_1000.n_components
+```
+
+The 1km distance-band graph has 5 components (look back at the map): a large
+central component, and four lonely observations in the Southern portion along
+the waterfront, all of which have no neighbors. When an observation has no
+neighbors, it's called an `isolate`.
+
+```{python}
+g_dist_1000.isolates
+```
+
+```{python}
+g_dist_1000.component_labels
+```
+
+Since the distance-band is fixed but the density of observations varies across
+the study area, distance-band weights can result in high variance in the
+neighbor cardinalities, as described above (e.g. some observations have many
+neighbors, others have few or none). This can be a nuisance in some
+applications, but a useful feature in others. Moving back to a graph-theoretic
+framework, we can look at how certain nodes (census blockgroups) influence
+others by virtue of their position in the network. That is, some blockgroups are
+more central or more connected than others, and thus can exert a more
+influential role in the network as a whole.
+
+```{python}
+nxg_dist = g_dist_1000.to_networkx()
+```
+
+```{python}
+pd.Series(nx.degree_centrality(nxg_dist)).hist()
+```
+
+Three graph-theoretic measures of centrality, which capture the concept of
+connectedness are
+[closness](https://networkx.org/documentation/stable/reference/algorithms/generated/networkx.algorithms.centrality.closeness_centrality.html#networkx.algorithms.centrality.closeness_centrality)
+centralty,
+[betweenness](https://networkx.org/documentation/stable/reference/algorithms/generated/networkx.algorithms.centrality.betweenness_centrality.html#networkx.algorithms.centrality.betweenness_centrality)
+centrality, and
+[degree](https://networkx.org/documentation/stable/reference/algorithms/generated/networkx.algorithms.centrality.degree_centrality.html#networkx.algorithms.centrality.degree_centrality)
+centrality, all of which (and more) can be computed for each node. By converting
+the graph to a NetworkX object, we can compute these three measures, then plot
+the most central node in the network of DC blockgroups according to each
+concept.
+
+```{python}
+# closeness centrality
+close = (
+    pd.Series(nx.closeness_centrality(nxg_dist)).sort_values(ascending=False).index[0]
+)
+# betweenness centrality
+between = (
+    pd.Series(nx.betweenness_centrality(nxg_dist)).sort_values(ascending=False).index[0]
+)
+# degree centrality
+degree = pd.Series(nx.degree_centrality(nxg_dist)).sort_values(ascending=False).index[0]
+
+# plot the most "central" node according to each metric
+focal_kws = dict(marker_kwds=dict(radius=10), style_kwds=dict(fillOpacity=1))
+centralities = zip(["red", "yellow", "blue"], [close, between, degree])
+
+m = g_dist_1000.explore(
+    dc,
+    color="gray",
+    tiles="CartoDB Darkmatter",
+    edge_kws=dict(style_kwds=dict(opacity=0.4)),
+)
+
+for color, measure in centralities:
+    m = g_dist_1000.explore(
+        dc,
+        focal=measure,
+        color=color,
+        focal_kws=focal_kws,
+        m=m,
+    )
+m
+```
+
+The map helps clarify the different concepts of centrality. The nodes with the
+highest closeness and degree centrality are in the densest parts of the graph
+near downtown DC. The blue subgraph shows the node with the highest degree
+centrality (i.e. the node with the greatest number of connections within a 1km
+radius), which is argubaly the node with the greatest *local connectivity* and
+the red subgraph shows the node with the highest closeness centrality, which is
+the node with the greatest *global* connectivity. The yellow subgraph shows the
+node with the highest betweenness centrality. Unlike the others, the yellow
+graph does not have many connections (neighbors) of its own, but instead, it
+connects three very dense subgraphs and thus serves as a pivotal bridge between
+these pieces of space. In this case, the blockgroup is literally a polygon that
+contains several bridges across the Anacostia river, which helps demonstrate the
+importance of considering infrastructure and the built environment when
+traversing space--and how much power you wield if, say, you
+[control a bridge](https://en.wikipedia.org/wiki/Fort_Lee_lane_closure_scandal)
+for political gain
+
+### K-Nearest Neighbors (KNN)
+
+Unlike the distance-band concept of a neighborhood, which defines neighbors
+according to a proximity criterion, regardless of how many neighbors meet that
+definition, the K-nearest neighbors (KNN) concept defines the *neighbor set*
+according to a minimum criterion, regardless of the distance necessary to travel
+to meet it. This is more akin to a *relative* concept of neighborhood, in that
+both dense and sparse places will have exactly the same number of neighbors, but
+the distance necessary to travel to interact with each neighbor can adapt to
+local conditions.
+
+This concept has a different set of benefits relative to the distance-band
+approach, for example, there is no longer any variation in the neighbor
+cardinalities (which can be useful, and can ensure a much more connected graph
+in cases with observations of varying density. But the KNN relationships can
+also induce asymmetry, which may be a problem in certain spatial econometric
+applications.
+
+```{python}
+g_knn5 = Graph.build_knn(dc.centroid, k=5)
+g_knn10 = Graph.build_knn(dc.centroid, k=10)
+```
+
+```{python}
+f, ax = plt.subplots(1, 2, figsize=(12, 8))
+ax = ax.flatten()
+
+g_knn5.plot(
+    dc, ax=ax[0], node_kws=dict(alpha=0.4, s=3), edge_kws=dict(alpha=0.4)
+).set_title("k=5", fontsize=18)
+
+g_knn10.plot(
+    dc, ax=ax[1], node_kws=dict(alpha=0.4, s=3), edge_kws=dict(alpha=0.4)
+).set_title("k=10", fontsize=18)
+
+for ax in ax:
+    ax.axis("off")
+    ctx.add_basemap(ax, source=ctx.providers.CartoDB.Positron, crs=dc.crs)
+plt.tight_layout()
+```
+
+Unlike distance relationships and contiguity relationships nearest-neighbor
+relationships are often asymmetric. That is, the closest observation to *me* may
+have several other neighbors closer than I am (i.e., in this scenario, I am not
+my neighbor's neighbor)
+
+```{python}
+g_dist_1000.asymmetry()
+```
+
+```{python}
+g_queen.asymmetry()
+```
+
+```{python}
+g_knn10.asymmetry().head(10)
+```
+
+```{python}
+g_knn10.asymmetry().groupby("focal").first().shape[0]
+```
+
+```{python}
+g_knn10.pct_nonzero
+```
+
+In the DC blockgroup data, the vast majority of observations in a KNN-10 graph
+contain an asymmetric relationship (that's 98% of the data). Note, this does not
+mean that 98% of *all relationships* are asymmetric, only that 98% of the
+observations have at least one neighbor which does not consider the reciprocal
+observation a neighbor.
+
+```{python}
+g_knn10.asymmetry().groupby("focal").first().shape[0] / g_knn10.n
+```
+
+```{python}
+symmetric = g_knn10.unique_ids[
+    ~g_knn10.unique_ids.isin(g_knn10.asymmetry().index.values)
+]
+```
+
+```{python}
+symmetric
+```
+
+```{python}
+ax = g_knn10.plot(
+    dc,
+    node_kws=dict(alpha=0.4),
+    edge_kws=dict(alpha=0.4),
+    focal=symmetric,
+    focal_kws=dict(color="blue"),
+    figsize=(5, 5),
+)
+ax.set_title("k=10 symmetric communties")
+ctx.add_basemap(ax=ax, source=ctx.providers.CartoDB.Positron, crs=dc.crs)
+ax.axis("off")
+```
+
+All of the focal nodes plotted here are also neighbors with each of their neighbors (that sounds strange...)
+
+```{python}
+g_knn10.cardinalities.hist()
+```
+
+### Kernel Functions
+
+In the general cases of the contiguity, distance-band, and KNN graphs,
+considered so far the relationships between observations are treated as binary:
+a relationship either exists or does not, and is encoded as a 1 if it exists,
+and as a 0 otherwise. But they can also all be extended to allow for the
+relationship to be weighted continuously by some additional measure. For
+example, a contiguity graph can be weighted by the lengh of the border shared
+between observations, which would allow observations to have a "stronger"
+relationship when they have larger sections of common borders.
+
+In the KNN or distance-band cases, it can alternatively make sense to weight the
+observations according to distance from the focal observation (hence the
+longstanding terminology for the spatial graph as a *spatial weights matrix*).
+Applying a weighting function (often called a distance decay function) in this
+way helps encode the first law of geography, allowing nearer observations to
+have a greater influence than further observations. A distance-base weight with
+a decay function often takes the form of a
+[kernel](https://en.wikipedia.org/wiki/Kernel_(statistics) weight, where the
+kernel refers to the shape of the decay function (the commonly-used
+distance-band weight is actually a just uniform kernel, but sometimes it makes
+sense to allow variation within the band).
+
+```{python}
+g_kernel_linear = Graph.build_kernel(dc.centroid, kernel="triangular", bandwidth=1000)
+g_kernel_gaussian = Graph.build_kernel(dc.centroid, kernel="gaussian", bandwidth=1000)
+```
+
+As with the distance-band graph, the kernel graph is only defined for point
+geometries, so we use the centroid of each polygon as our representation of each
+unit, and the bandwidth is measured in units of the CRS (so defined as 1km
+here). Providing different arguments to the `kernel` parameter changes the
+weighting function applied at each distance.
+
+```{python}
+g_kernel_linear.adjacency.head(5)
+```
+
+```{python}
+g_kernel_gaussian.adjacency.head(5)
+```
+
+The explore method can actually plot the value of the weight for each edge in
+the graph, although the visualization can be a bit tough to take in. It is
+easier to visualize one node at a time. Here, the shorter lines will be encoded
+with lighter colors and longer lines (representing longer distances) are darker
+as they get assigned lower weights. Note you can re-run the cell below to
+visualize a different node (or change the `focal` argument to a particular node
+instead of a random selection)
+
+```{python}
+g_kernel_linear.explore(
+    dc,
+    # pick a random node in the graph to visualize
+    focal=dc.reset_index().geoid.sample(),
+    edge_kws=dict(
+        column="weight",
+        style_kwds=dict(weight=5),
+    ),
+    tiles="CartoDB Darkmatter",
+)
+```
+
+
+## Transformations
+
+In many empirical applications of the `Graph`, it is useful to normalize or
+standardize the weight structure for each unit (i.e. to rescale the weight value
+for each unit such that the sum equals 1). In the spatial econometrics
+literature, this operation is canonically called a *transform* of the spatial
+weights matrix. The `Graph` inherits this terminology; thus, it is extremely
+common to transform the Graph prior to using it.
+
+```{python}
+g_rook.adjacency.head(10)
+```
+
+The Graph's `transform` method allows each observation to be standardized using different techniques
+
+```{python}
+?g_rook.transform
+```
+
+```{python}
+g_rook.transform("r").adjacency.head(10)
+```
+
+Now the weight values for first observation (`110010001011`) are rescaled to 0.2
+for each neighbor (since `110010001011` has 5 neighbors). Note that unlike its
+the predecessor (the `libpysal.weights.Weights` class), the `Graph` is
+*immutable*, which means to store the transformation permanently, it is
+necessary to save it back into a variable!
+
+Non-constant weights can also be transformed
+
+```{python}
+g_kernel_linear.adjacency
+```
+
+```{python}
+g_kernel_linear.transform("r").adjacency
+```
+
+Using a row-transformation, the weight values for each observation sum to 1
+
+```{python}
+g_kernel_linear.transform("r").adjacency.groupby(level=0).sum()
+```
+
+If we doubly standardize, the weight values for all observations combined sums to 1
+
+```{python}
+g_kernel_linear.transform("d").adjacency.groupby(level=0).sum().sum()
+```
+
+## Advanced Graphs
+
+### Transport Network-Based Graphs
+
+The `Graph` class is designed to be flexible, and it can be constructed from a
+variety of formats. For example, you could create a full pairwise distance
+matrix from a set of input points and build a graph from that matrix. Here, we
+will create a new graph based on walk network distances from OpenStreetMap using
+the `pandana` library
+
+
+```{python}
+dc_wgs = dc.to_crs(4326)
+```
+
+```{python}
+dc_walk_net = gio.get_network_from_gdf(dc_wgs)
+```
+
+Then, we get the nearest node in the OSM network (i.e. the nearest street
+intersection) and attach it to the nearest centroid of each observation
+
+
+When using `metric="precomputed"`, the first argument of the builder function is a sparse matrix that encodes relationships between each pair of observations (here, the shortest walking path between each of the observation centroids--provided the path distance is less than 2km)
+
+```{python}
+g_network = Graph.build_travel_cost(df=dc_wgs.set_geometry(dc_wgs.centroid), network=dc_walk_net, threshold=2000)
+```
+
+```{python}
+f, ax = plt.subplots(1, 2, figsize=(12, 8))
+ax = ax.flatten()
+
+g_network.plot(
+    dc, ax=ax[0], node_kws=dict(alpha=0.4, s=2), edge_kws=dict(alpha=0.2)
+).set_title("Network-based 2km", fontsize=16)
+
+g_dist_2000.plot(
+    dc, ax=ax[1], node_kws=dict(alpha=0.4, s=2), edge_kws=dict(alpha=0.2)
+).set_title("Euclidean-based 2km", fontsize=16)
+
+for ax in ax:
+    ax.axis("off")
+    ctx.add_basemap(ax, source=ctx.providers.CartoDB.Positron, crs=dc.crs)
+plt.tight_layout()
+```
+
+Including the constraint that distance must be measured along the walking
+network between observations (rather than Euclidean distance) results in some
+notable distinctions between the two resulting Graphs. In particular, the
+observations in Northwest DC are no longer connected through rock creek park,
+and the blockgroups in Southeast are no longer connected across the Anacostia
+river. This is a more realistic depiction of the potential interaction structure
+based on infrastructure throughput and helps show how the built environment can
+be used to develop alternative concepts of spatial connectivity Graphs
+
+```{python}
+g_dist_2000.pct_nonzero
+```
+
+```{python}
+g_network.pct_nonzero
+```
+
+The graph based on network-constrained 2km distance is more sparse than the
+graph based on Euclidean distances, showing that transport networks (which are
+not straight lines) make travel distances further than they sometimes appear.
+Thus, using them to construct the graph distances results in fewer connections
+because most observations are further apartwhen measured along the walk network.
+
+### Flow-based Graphs
+
+Instead of spatial proximity, the relationship between observations could be
+represented by other types of flow data, such as trade, transactions, or
+observed commutes. For example, the Census LODES data contain information on
+flows between residential locations and job locations at the block level. This
+uses LODES V7 which is based on 2010 census block definitions
+
+```{python}
+dc_flows = pd.read_csv(
+    "https://lehd.ces.census.gov/data/lodes/LODES7/dc/od/dc_od_main_JT00_2019.csv.gz"
+)
+```
+
+
+The data are formatted as an adjacency list, with the first three columns
+containing all the necessary information:
+
+- "w_geocode": workplace block fips code
+- "h_geocode": home block fips code
+- "S000": the total number of jobs (i.e. flows) between home and work
+
+```{python}
+# the block-level data is large, so save to disk before reading in
+gio.store_blocks_2010()
+dc_blks = datasets.blocks_2010(states="11")
+```
+
+Once again, we pivot this adjacency list into a properly-ordered sparse matrix
+
+```{python}
+dc_flows[["w_geocode", "h_geocode"]] = dc_flows[["w_geocode", "h_geocode"]].astype(str)
+dc_flows["S000"] = dc_flows["S000"].astype(float)
+
+dc_blks = dc_blks[dc_blks.geoid.isin(dc_flows.w_geocode.unique())]
+ids = dc_blks.geoid.values
+
+dc_flows_sparse = (
+    dc_flows.set_index(["w_geocode", "h_geocode"])["S000"]
+    .astype("Sparse[float]")
+    .reindex(ids, level=0)
+    .reindex(ids, level=1)
+    .sparse.to_coo(sort_labels=True)[0]
+)
+
+g_flow = Graph.from_sparse(dc_flows_sparse, ids=ids)
+```
+
+```{python}
+g_flow.cardinalities.hist()
+```
+
+```{python}
+g_flow.pct_nonzero
+```
+
+```{python}
+g_flow.adjacency.reset_index().describe()
+```
+
+```{python}
+dc_blks.plot()
+```
+
+```{python}
+g_flow.adjacency
+```
+
+```{python}
+g_flow.n
+```
+
+```{python}
+dc_blks.shape[0]
+```
+
+```{python}
+ax = g_flow.plot(
+    dc_blks.set_index("geoid"),
+    nodes=False,
+    edge_kws=dict(alpha=0.004, linestyle="dotted"),
+    figsize=(7,8),
+)
+ctx.add_basemap(ax=ax, source=ctx.providers.CartoDB.Positron, crs=dc_blks.crs)
+ax.axis("off")
+```
+
+Here, the plot shows flows between origins and destinations. The strong central tendency shows how commutes tend to flow toward the center of the city
+
+### Coincident Nodes
+
+Classic spatial graphs are built from polygon data, which are typically
+exhaustive and planar-enforced. The Census block and blockgroup data we have
+seen until now are typical in this way; the relationships expressed by polygon
+contiguity (or distance) are unambiguous and straightforward to model using a
+simple set of rules, but these spatial representations are often over-simplified
+or aggregate summaries of real phenomena. Blockgroups, for example, are zones
+created from aggregated household data, and the relationships can become more
+complex when working with disaggregate microdata recorded at the household
+level.
+
+Continuing with the household example, in urban areas, it is common for many
+observations to be located at the same "place", for example an apartment
+building with several units located at the same physical address (in some cases
+additional information such as floor level could be available, allowing 3D
+distance computations, but this is an unusually detailed case that also requires
+the actual floor layout of each building to be realistic...). In these cases,
+(i.e. with several coincident observations in space) certain graph-building
+rules like triangulation or k-nearest neighbors can become invalid when the
+relatioships between points are undefined, yielding, e.g. 10 nearest neighbors
+at *exactly the same location* when the user has requested a graph with `k=5`.
+How do we choose which 5 among the coincident 10 should be neighbors?
+
+...We dont. Instead, we offer two solutions that make the rule valid:
+
+- `jitter` introduces a small amount of random noise into each location,
+  dispersing a set of coincident points into a small point cloud. This generates
+  a valid topology that can be operated upon using the original construction
+  rule. The tradeoff, here, is that the neighbor-set is stochastic and any two
+  versions of a jittered `Graph` will likely have very different neighbors.
+
+- `clique` expands the graph internally, as necessary, so that the construction
+  rule applies to each unique *location* rather than each unique *observation*.
+  This effectively makes every coincident observation a neighbor with all other
+  coincident observations, then proceeds with the normal construction rule. In
+  other words, we operate on the subset of points for which the original
+  construction rule *is* valid, then retroactively break the rule to reinsert
+  the omitted observations back into their neighborhoods. In many cases, this
+  can result in a "conceptually accurate" representation of the nighborhood
+  (e.g. where units in the same apartment building are all considered
+  neighbors), however the construction 'rule' will ultimately end up broken,
+  which removes some of the desirable properties of certain graphs. For example,
+  a KNN graph with 10 neighbors will now have variation, as some locations will
+  have greater than 10 neighbors.
+
+
+
