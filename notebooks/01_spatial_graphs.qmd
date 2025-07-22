@@ -10,7 +10,6 @@ special kind of network graph embedded in geographical space, and using the
 `libpysal.graph` module, we can explore these relationships in depth.
 
 ```{python}
-%load_ext jupyter_black
 %load_ext watermark
 %watermark -v -a "author: eli knaap" -d -u -p libpysal
 ```
@@ -813,74 +812,6 @@ g_kernel_linear.transform("d").adjacency.groupby(level=0).sum().sum()
 
 ## Advanced Graphs
 
-### Transport Network-Based Graphs
-
-The `Graph` class is designed to be flexible, and it can be constructed from a
-variety of formats. For example, you could create a full pairwise distance
-matrix from a set of input points and build a graph from that matrix. Here, we
-will create a new graph based on walk network distances from OpenStreetMap using
-the `pandana` library
-
-
-```{python}
-dc_wgs = dc.to_crs(4326)
-```
-
-```{python}
-dc_walk_net = gio.get_network_from_gdf(dc_wgs)
-```
-
-Then, we get the nearest node in the OSM network (i.e. the nearest street
-intersection) and attach it to the nearest centroid of each observation
-
-
-When using `metric="precomputed"`, the first argument of the builder function is a sparse matrix that encodes relationships between each pair of observations (here, the shortest walking path between each of the observation centroids--provided the path distance is less than 2km)
-
-```{python}
-g_network = Graph.build_travel_cost(df=dc_wgs.set_geometry(dc_wgs.centroid), network=dc_walk_net, threshold=2000)
-```
-
-```{python}
-f, ax = plt.subplots(1, 2, figsize=(12, 8))
-ax = ax.flatten()
-
-g_network.plot(
-    dc, ax=ax[0], node_kws=dict(alpha=0.4, s=2), edge_kws=dict(alpha=0.2)
-).set_title("Network-based 2km", fontsize=16)
-
-g_dist_2000.plot(
-    dc, ax=ax[1], node_kws=dict(alpha=0.4, s=2), edge_kws=dict(alpha=0.2)
-).set_title("Euclidean-based 2km", fontsize=16)
-
-for ax in ax:
-    ax.axis("off")
-    ctx.add_basemap(ax, source=ctx.providers.CartoDB.Positron, crs=dc.crs)
-plt.tight_layout()
-```
-
-Including the constraint that distance must be measured along the walking
-network between observations (rather than Euclidean distance) results in some
-notable distinctions between the two resulting Graphs. In particular, the
-observations in Northwest DC are no longer connected through rock creek park,
-and the blockgroups in Southeast are no longer connected across the Anacostia
-river. This is a more realistic depiction of the potential interaction structure
-based on infrastructure throughput and helps show how the built environment can
-be used to develop alternative concepts of spatial connectivity Graphs
-
-```{python}
-g_dist_2000.pct_nonzero
-```
-
-```{python}
-g_network.pct_nonzero
-```
-
-The graph based on network-constrained 2km distance is more sparse than the
-graph based on Euclidean distances, showing that transport networks (which are
-not straight lines) make travel distances further than they sometimes appear.
-Thus, using them to construct the graph distances results in fewer connections
-because most observations are further apartwhen measured along the walk network.
-
 ### Flow-based Graphs
 
 Instead of spatial proximity, the relationship between observations could be
@@ -905,7 +836,6 @@ containing all the necessary information:
 
 ```{python}
 # the block-level data is large, so save to disk before reading in
-gio.store_blocks_2010()
 dc_blks = datasets.blocks_2010(states="11")
 ```
 

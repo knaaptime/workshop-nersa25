@@ -1,0 +1,930 @@
+---
+title: Migration Flows with Graphs, Models, and Spatial Interaction
+jupyter: conda-env-nersa25-py
+---
+
+
+
+```{python}
+import geopandas as gpd
+import numpy as np
+import pandas as pd
+from geosnap import DataStore
+from geosnap import io as gio
+from libpysal.graph import Graph
+from spint.gravity import Attraction, Doubly, Gravity, Production
+from lonboard import Map, PolygonLayer,ScatterplotLayer, basemap, viz
+from lonboard.experimental import ArcLayer, TripsLayer
+from lonboard.layer_extension import BrushingExtension
+from mapclassify.util import get_color_array
+import statsmodels.formula.api as smf
+from statsmodels.api import families
+import networkx as nx
+from formulaic import Formula
+```
+
+## Demographic & Socioeconomic Data
+
+### ACS Data
+
+```{python}
+datasets = DataStore()
+
+dc = gio.get_acs(datasets, state_fips="11", years=2021, level="tract")
+```
+
+```{python}
+dc.head()
+```
+
+```{python}
+dc.plot()
+```
+
+### LODES Data
+
+```{python}
+dc_flows = pd.read_csv(
+    "https://lehd.ces.census.gov/data/lodes/LODES8/dc/od/dc_od_main_JT00_2022.csv.gz",
+    converters={"w_geocode": str, "h_geocode": str},
+    low_memory=False,
+    encoding="latin1",
+)
+```
+
+```{python}
+dc_flows
+```
+
+add tract-level geoids and drop extraneous columns
+
+```{python}
+dc_flows["w_tr_geocode"] = dc_flows["w_geocode"].str[:11]
+dc_flows["h_tr_geocode"] = dc_flows["h_geocode"].str[:11]
+
+dc_flows = dc_flows[["w_geocode", "h_geocode", "w_tr_geocode", "h_tr_geocode", "S000"]]
+```
+
+pretend like its a closed system, only consdidering intra-regional flows
+
+aggregate to tract-level flows (from block-level)
+
+```{python}
+dc_flows = (
+    dc_flows.groupby(["w_tr_geocode", "h_tr_geocode"])["S000"].sum().reset_index()
+)
+```
+
+this is an origin-destination matrix (as an adjacency list). `S000` is the number of flows between home census tract `h_tr_geocode` and work tract `w_tr_geocode`. There are many intra-tract flows $W_{ii}\neq0$} (people commuting within the same tract, or *possibly* WFH, though that would be tough with LODES) and the flows are *directed* $W_{ij} \neq W_{ji}$
+
+```{python}
+dc_flows
+```
+
+create a pysal Graph to represent these flows. to represent the direction of flow correctly the focal column is home and neighbor is work (this shows the AM commute)
+
+```{python}
+dc_flow_graph = Graph.from_adjacency(
+    adjacency=dc_flows,
+    focal_col="h_tr_geocode",
+    neighbor_col="w_tr_geocode",
+    weight_col="S000",
+)
+```
+
+```{python}
+dc_flow_graph.summary()
+```
+
+```{python}
+dc_flow_graph.adjacency.head()
+```
+
+the `Graph` is ordered, and to visualize it correctly we want to align our other data to match this Graph; so stash the id/order
+
+```{python}
+idx = dc_flow_graph.unique_ids
+```
+
+create a geodataframe of centroids to visualize point-to-point flows, then reindex to re-order appropriately and drop observations with no flow.
+
+```{python}
+dc_centroids = dc.set_geometry(dc.centroid)
+dc_centroids = dc_centroids.set_index("geoid").reindex(idx)
+```
+
+```{python}
+dc_centroids.shape  # matches our Graph.n
+```
+
+## Visualize
+
+```{python}
+flows = dc_flow_graph.adjacency.reset_index()
+```
+
+```{python}
+flows
+```
+
+```{python}
+# mapping of geoid to (point) geometry
+dc.centroid.head()
+```
+
+```{python}
+flows['focal'] = flows['focal'].replace(dc_centroids['geometry'].to_dict())
+flows['neighbor'] = flows['neighbor'].replace(dc_centroids['geometry'].to_dict())
+```
+
+```{python}
+flows
+```
+
+```{python}
+origins = gpd.GeoSeries(flows.focal).get_coordinates().values
+
+destinations = (
+    gpd.GeoSeries(flows.neighbor).get_coordinates().values
+)
+```
+
+```{python}
+origins
+```
+
+```{python}
+from shapely import LineString
+```
+
+```{python}
+LineString([flows['focal'][0], flows['neighbor'][0]])
+```
+
+```{python}
+lines = gpd.GeoSeries([LineString([row[1]['focal'], row[1]['neighbor']]) for row in flows.iterrows()], crs=4326)
+```
+
+```{python}
+flow_lines =gpd.GeoDataFrame(flows['weight'], geometry=lines)
+```
+
+```{python}
+flow_lines
+```
+
+```{python}
+lines.explore()
+```
+
+
+```{python}
+viz(flow_lines)
+```
+
+```{python}
+dc_flow_graph.adjacency
+```
+
+```{python}
+flow_lines[['weight', 'geometry']]
+```
+
+```{python}
+brushing_extension = BrushingExtension()
+brushing_radius = 300
+
+arc_layer = ArcLayer(
+    table=flow_lines[['weight', 'geometry']].to_arrow(),
+    get_width=flow_lines.weight.apply(lambda x: x**.7),
+    get_source_position=origins,
+    get_target_position=destinations,
+    opacity=0.4,
+    pickable=False,
+    extensions=[brushing_extension],
+    brushing_radius=brushing_radius,
+    get_source_color=get_color_array(flow_lines.weight**.7, scheme='fisher_jenks', k=10, cmap='inferno_r'),
+    get_target_color=get_color_array(flow_lines.weight**.7, scheme='fisher_jenks', k=10, cmap='inferno_r')
+)
+
+source_gdf = gpd.GeoDataFrame(geometry=flows["focal"], crs=4326)
+target_gdf = gpd.GeoDataFrame(geometry=flows["neighbor"], crs=4326)
+
+tgt = ScatterplotLayer.from_geopandas(
+    target_gdf,
+    radius_scale=30,
+    pickable=True,
+    stroked=False,
+    filled=True,
+    line_width_min_pixels=2,
+    extensions=[brushing_extension],
+    brushing_radius=brushing_radius,
+)
+
+src = ScatterplotLayer.from_geopandas(
+    source_gdf,
+    radius_scale=15,
+    pickable=False,
+    stroked=False,
+    filled=True,
+    line_width_min_pixels=2,
+    extensions=[brushing_extension],
+    brushing_radius=brushing_radius,
+)
+
+bounds = PolygonLayer.from_geopandas(
+    dc,
+    get_fill_color=[255, 255, 255, 200],
+    stroked=True,
+    line_width_min_pixels=0.5,
+    pickable=False,
+    opacity=0.3
+)
+
+ogb = ScatterplotLayer.from_geopandas(
+    source_gdf,
+    get_fill_color=[255, 255, 255, 200],
+    stroked=True,
+    line_width_min_pixels=0.5,
+    pickable=False,
+)
+
+gmap = Map(layers=[bounds, src, tgt, arc_layer,ogb], picking_radius=500)
+gmap.to_html('dc_flow_orig_orient.html')
+
+
+gmap
+```
+
+the mouseover is keyed on *home* (origin), so the visualiztion shows flows *away* from the selected location. To focus on destinations/inflows, we can reverse the orientation in the ArcLayer
+
+```{python}
+flows
+```
+
+```{python}
+dest_graph = Graph.from_adjacency(dc_flows,
+    focal_col="w_tr_geocode",
+    neighbor_col="h_tr_geocode",
+    weight_col="S000",
+)
+
+dest_graph_flows = dest_graph.adjacency.reset_index()
+
+dest_graph_flows['focal'] = dest_graph_flows['focal'].replace(dc_centroids['geometry'].to_dict())
+dest_graph_flows['neighbor'] = dest_graph_flows['neighbor'].replace(dc_centroids['geometry'].to_dict())
+
+dest_lines = gpd.GeoSeries([LineString([row[1]['focal'], row[1]['neighbor']]) for row in dest_graph_flows.iterrows()], crs=4326)
+dest_lines =gpd.GeoDataFrame(dest_graph_flows['weight'], geometry=dest_lines)
+
+origins = gpd.GeoSeries(dest_graph_flows.focal).get_coordinates().values
+
+destinations = (
+    gpd.GeoSeries(dest_graph_flows.neighbor).get_coordinates().values
+)
+
+arc_layer = ArcLayer(
+    table=dest_lines[['weight', 'geometry']].to_arrow(),
+    get_width=dest_lines.weight.apply(lambda x: x**.7),
+    get_source_position=origins,
+    get_target_position=destinations,
+    opacity=0.4,
+    pickable=False,
+    extensions=[brushing_extension],
+    brushing_radius=brushing_radius,
+    get_source_color=get_color_array(dest_lines.weight**.8, scheme='fisher_jenks', k=10, cmap='inferno_r'),
+    get_target_color=get_color_array(dest_lines.weight**.6, scheme='fisher_jenks', k=10, cmap='inferno_r')
+)
+gmap = Map(layers=[bounds, src, tgt, arc_layer,ogb], picking_radius=500)
+
+gmap.to_html('dc_flow_dest_orient.html')
+
+gmap
+```
+
+
+```{python}
+dc = dc.set_index("geoid")
+```
+
+## Migration as a Graph
+
+the matrix representation of the network shows us the level of flow from each origin-destination pair
+
+### Matrix Representation
+
+```{python}
+dc_flow_graph.sparse.todense()
+```
+
+there are lots of "internal flows", i.e. commutes that begin and end in the same tract (relatively large numbers along the diagonal). But it's common in migration studies to focus on inter-zonal flows, so we remove these--but first we will record the total numbers
+
+```{python}
+all_commutes = pd.Series(
+    dc_flow_graph.sparse.sum(axis=1), index=dc_flow_graph.unique_ids, name="flows"
+)
+```
+
+now save the total number of internal commutes (self-loops in the network; the diagonal of the matrix)
+
+```{python}
+# how many self-loops (trips originating and ending in the same tract
+# not sure if there's an easier way to get this, but its the diagonal of the weights matrix
+intra_commutes = pd.Series(
+    np.diag(dc_flow_graph.sparse.todense()),
+    index=dc_flow_graph.unique_ids,
+    name="self_loops",
+)
+intra_share = intra_commutes / all_commutes
+```
+
+```{python}
+intra_commutes
+```
+
+just so we can take a look: internal commutes are a small but non-significant share of our job flow data
+
+```{python}
+#| scrolled: true
+intra_share
+```
+
+```{python}
+intra_commutes.sum() / all_commutes.sum()
+```
+
+in DC, 3.6% of the employees in LODES data have a job and workplace in the same census tract
+
+```{python}
+#| scrolled: true
+dc.join(intra_commutes, how="left").explore(
+    "self_loops",
+    style_kwds={"weight": 0.5},
+    tiles="cartodb positron",
+    tooltip="self_loops",
+    scheme="fisherjenks",
+    cmap="RdBu_r",
+)
+```
+
+```{python}
+dc.join(intra_share.rename("intra_share"), how="left").explore(
+    "intra_share",
+    style_kwds={"weight": 0.5},
+    tiles="cartodb positron",
+    tooltip="intra_share",
+    scheme="fisherjenks",
+    cmap="RdBu_r",
+)
+```
+
+### Network Representation
+
+to look at directionality (sending regions vs receiving regions) we can use network method from `networkx`
+
+we only want to consider incoming and outgoing flows, so we first remove the diagonal in our `Graph` (and drop those observations), then convert to a `networkx` object
+
+```{python}
+dc_nx = dc_flow_graph.assign_self_weight(0).eliminate_zeros().to_networkx()
+```
+
+the *degree* of a node is the number of connections it has. Out-degree is the number of outgoing connections and in-degree is the number of incoming connections. For a focal observation, the *out degree* is the number of 'neighbors' it has (in spatial graph terminology), which is the same as its *cardinality*
+
+```{python}
+dc_flow_graph.assign_self_weight(0).eliminate_zeros().cardinalities
+```
+
+```{python}
+pd.Series(dict(dc_nx.out_degree))
+```
+
+when the degree measure is weighted, each link/edge/relationship is multiplied by by its weight. Thus the weighted degree for each node is the sum of its weights  (in spatial econometric parlance, this is equivalent to an un-transformed *spatial lag*)
+
+with out flow data, the weighted out degree measures the number of trips moving away from a home tract in the AM, and in-degree measures the number of trips incoming during the AM commute. The weighted degree (plain) is their sum, capturing the total fluctuation in the unit
+
+```{python}
+out_degree = pd.Series(
+    dict(dc_nx.out_degree(dc_nx, weight="weight")), name="out_degree"
+)
+in_degree = pd.Series(
+    dict(dc_nx.in_degree(dc_nx, weight="weight")), name="in_degree"
+)
+
+degree = pd.Series(dict(dc_nx.degree(dc_nx, weight="weight")), name="degree")
+```
+
+note the weighted out-degree is the same as the *spatial lag* when the weights matrix is unstandardized
+
+```{python}
+lag = dc_flow_graph.lag(np.ones(dc_flow_graph.n))
+```
+
+```{python}
+pd.Series(lag).hist()
+```
+
+```{python}
+out_degree.hist()
+```
+
+
+```{python}
+pop_change = intra_commutes + in_degree - out_degree
+```
+
+```{python}
+pop_change.hist()
+```
+
+```{python}
+# daily population change
+# internal movers plus immigration minus emigration
+intra_commutes + in_degree - out_degree
+```
+
+```{python}
+out_degree
+```
+
+```{python}
+#| scrolled: true
+out_degree.sum() + intra_commutes.sum() == all_commutes.sum()
+```
+
+```{python}
+dc_flow_graph.adjacency.reset_index().groupby("neighbor").sum().sum()
+```
+
+```{python}
+out_degree.sum()
+```
+
+```{python}
+out_degree.sum() / all_commutes.sum()
+```
+
+```{python}
+all_commutes.sum()
+```
+
+```{python}
+import seaborn as sns
+sns.heatmap(dc_flow_graph.sparse.todense())
+```
+
+
+```{python}
+out_degree.hist(bins=20)
+```
+
+```{python}
+in_degree.sum()
+```
+
+```{python}
+in_degree.hist(bins=20)
+```
+
+
+```{python}
+dc.join(out_degree, how="left").explore(
+    "out_degree",
+    style_kwds={"weight": 0.5},
+    tiles="cartodb positron",
+    tooltip="out_degree",
+    scheme="fisherjenks",
+)
+```
+
+```{python}
+dc.join(in_degree, how="left").explore(
+    "in_degree",
+    style_kwds={"weight": 0.5},
+    linewidth=0.5,
+    tiles="cartodb positron",
+    tooltip="in_degree",
+    scheme="fisherjenks",
+)
+```
+
+```{python}
+dc.join((out_degree / all_commutes).rename("out_share"), how="left").plot(
+    "out_share",
+    linewidth=0.5,
+    #style_kwds={"weight": 0.5},
+    #tiles="cartodb positron",
+    #tooltip="out_share",
+    scheme="fisherjenks",
+    cmap="RdBu_r",
+)
+```
+
+in-migration as a share of all change
+
+```{python}
+(in_degree / (intra_commutes + in_degree)).hist()
+```
+
+```{python}
+#| scrolled: true
+dc.join(
+    (in_degree / (intra_commutes + in_degree)).rename("in_share"), how="left"
+).plot(
+    "in_share",
+    #style_kwds={"weight": 0.5},
+    #tiles="cartodb positron",
+    #tooltip="in_share",
+    linewidth=0.5,
+    scheme="fisherjenks",
+    cmap="RdBu_r",
+)
+```
+
+```{python}
+(out_degree / all_commutes).hist()
+```
+
+```{python}
+dc.join(((in_degree - out_degree) / degree).rename("diff"), how="left").plot(
+    "diff",
+    #style_kwds={"weight": 0.5},
+    #tiles="cartodb positron",
+    #tooltip="diff",
+    linewidth=0.5,
+    scheme="fisherjenks",
+    cmap="RdBu_r",
+    legend=True
+)
+```
+
+```{python}
+out_degree / all_commutes
+```
+
+
+## Migration Models
+
+```{python}
+dc_flow_graph = dc_flow_graph.assign_self_weight(0).eliminate_zeros()
+```
+
+spatial interaction models are a classic regional science technique for modeling flows (migration, commuting, trading, etc). Spatial interaction models try to explain these flows between origin and destination as a function of origin (push) and destination (pull) factors, attenuated by the cost of traveling between them. The PySAL `spint` package 
+
+In this model, the dependent variable $y$ is the level of flow between an origin and destination. Our `Graph` is based on flows, which means $y$ is the value of the "weight" held in `balt_flow_graph`, thus can use the adjacency list as our core data structure (once again it's easier to remove the intra-tract flows)
+
+```{python}
+# sparse representation
+dc_interaction = (
+    dc_flow_graph.assign_self_weight(0).eliminate_zeros().adjacency.reset_index()
+)
+dc_interaction
+```
+
+```{python}
+# for our dataset we want the full dense matrix
+dc_interaction = pd.Series(dc_flow_graph.sparse.toarray().reshape(-1), 
+                             index=pd.MultiIndex.from_product([dc_flow_graph.unique_ids, 
+                                                               dc_flow_graph.unique_ids.rename('neighbor')])).rename('weight')
+```
+
+```{python}
+dc_interaction = dc_interaction.reset_index()
+dc_interaction
+```
+
+in spatial interaction terms focal=origin and neighbor=destination, so we can attach attributes of origins and destinations by doing left-joins on the y-variable successively based on focal, then neighbor
+
+```{python}
+# first merge origin attributes
+dc_interaction = dc_interaction.merge(
+    dc.drop(columns=["geometry"]), left_on="focal", right_index=True, how="left"
+)
+```
+
+```{python}
+# now merge destination attributes
+dc_interaction = dc_interaction.merge(
+    dc.drop(columns=["geometry"]),
+    left_on="neighbor",
+    right_index=True,
+    how="left",
+    suffixes=["_origin", "_destination"],
+)
+```
+
+note the suffixes differentiate columns referring to origin and destination values, e.g. `median_household_income_origin` and `median_household_income_destination`
+
+```{python}
+dc_interaction
+```
+
+```{python}
+dc_interaction[
+    ["weight", "median_household_income_origin", "median_household_income_destination"]
+]
+```
+
+for a spatial interaction model we also need *another* Graph that measures the distance between observations. There are many ways to do this, but the easiest is to use a distance band weight where all observations are guaranteed to lie within the threshold (giving us a pairwise matrix)
+
+```{python}
+dc = dc.to_crs(dc.estimate_utm_crs())
+```
+
+keep only tracts in the dataframe in our flow graph (origins), then get distance between observations with no decay
+
+```{python}
+dc = dc[dc.index.isin(dc_flow_graph.unique_ids)]
+dc_dist = Graph.build_distance_band(
+    dc.set_geometry(dc.centroid), threshold=1e20, binary=False, alpha=1
+)
+```
+
+```{python}
+dc_dist.summary()
+```
+
+```{python}
+dc_dist.adjacency
+```
+
+```{python}
+# subset the distance graph by the travel graph (remove destinations we dont need)
+# but this resets weights to 1
+dc_dist_adj = dc_dist.intersection(dc_flow_graph).adjacency
+```
+
+```{python}
+# update with the old values
+dc_dist_adj.update(dc_dist.adjacency)
+```
+
+```{python}
+dc_interaction["distance"] = dc_dist.sparse.toarray().reshape(-1)
+```
+
+```{python}
+dc_interaction['weight'] = dc_interaction['weight'].astype(int)
+```
+
+finally, we'll do some simple cleanup since we have missing values etc. 
+
+```{python}
+# mean-impute missing values
+dc_interaction = dc_interaction.fillna(dc_interaction.mean(numeric_only=True))
+
+# increment cols by 1 to make logs easier
+dc_interaction['distance'] = dc_interaction['distance'] +1
+
+dc_interaction['n_total_pop_origin'] = dc_interaction['n_total_pop_origin'] +1
+dc_interaction['n_total__pop_destination'] = dc_interaction['n_total_pop_destination'] +1
+
+dc_interaction['p_nonhisp_black_persons_origin'] = dc_interaction['p_nonhisp_black_persons_origin'] +1
+dc_interaction['p_nonhisp_black_persons_destination'] = dc_interaction['p_nonhisp_black_persons_destination'] +1
+
+dc_interaction = dc_interaction.copy()
+```
+
+```{python}
+dc_interaction
+```
+
+## Spatial Interaction with `spint`
+
+see @oshan2016PrimerWorking for a deeper discussion of spatial interaction models and their implementation details in PySAL
+
+### Gravity
+
+```{python}
+g = Gravity(
+    dc_interaction["weight"].values,
+    o_vars=dc_interaction[["n_total_pop_origin", "median_household_income_origin", "p_nonhisp_black_persons_origin"]].values,
+    d_vars=dc_interaction[
+        ["n_total_pop_destination", "median_household_income_destination",  "p_nonhisp_black_persons_destination"]
+    ]
+    .values,
+    cost=dc_interaction["distance"],
+    cost_func="exp",
+    constant=True,
+).fit()
+```
+
+```{python}
+g.params
+```
+
+```{python}
+g.adj_pseudoR2
+```
+
+```{python}
+dc_interaction["distance"]
+```
+
+
+```{python}
+g_statsmodels = smf.glm(
+    "weight ~ 1 + np.log(n_total_pop_origin) + np.log(median_household_income_origin) + np.log(p_nonhisp_black_persons_origin) + np.log(n_total_pop_destination) + np.log(median_household_income_destination) + np.log(p_nonhisp_black_persons_destination) + distance",
+    family=families.Poisson(),
+    data=dc_interaction,).fit(cov_type='HC0', scale='X2')
+```
+
+```{python}
+g_statsmodels.summary()
+```
+
+```{python}
+g.params.round(4)
+```
+
+```{python}
+out = g_statsmodels.params.rename("statsmdodels").to_frame().copy()
+out["spint"] = g.params.T.round(4)
+```
+
+compare coefs in a table format
+
+```{python}
+out
+```
+
+### Production-Constrained
+
+unit-level fixed effects for origins
+
+```{python}
+mod_prod = Production(
+    dc_interaction["weight"].values,
+    dc_interaction["focal"].values,
+    d_vars=dc_interaction[
+        ["n_total_pop_destination", "median_household_income_destination", "p_nonhisp_black_persons_destination"]
+    ]
+    .values,
+    cost=dc_interaction["distance"].values,
+    cost_func="exp",
+).fit()
+```
+
+```{python}
+mod_prod.params[-4:]
+```
+
+```{python}
+mod_prod.adj_pseudoR2
+```
+
+also do the power version/
+
+```{python}
+mod_prod_pow = Production(
+    dc_interaction["weight"].values,
+    dc_interaction["focal"].values,
+    d_vars=dc_interaction[
+        ["n_total_pop_destination", "median_household_income_destination", "p_nonhisp_black_persons_destination"]
+    ]
+    .values,
+    cost=dc_interaction["distance"].values,
+    cost_func="pow",
+).fit()
+```
+
+```{python}
+mod_prod_pow.params[-4:]
+```
+
+```{python}
+mod_prod_pow.adj_pseudoR2
+```
+
+### Attraction-Constrained
+
+unit-level fixed effects for destinations
+
+```{python}
+mod_attr = Attraction(
+    flows=dc_interaction["weight"].values,
+    destinations=dc_interaction["neighbor"].values,
+    o_vars=dc_interaction[["n_total_pop_origin", "median_household_income_origin",  "p_nonhisp_black_persons_origin"]]
+    .values,
+    cost=dc_interaction["distance"].values,
+    cost_func="exp",
+)
+```
+
+the constrained models can be calibrated *locally*, i.e. each observation has its own set of coefficients, thus we can map the effect of a given parameter, say distance:
+
+```{python}
+attr_local = pd.DataFrame(mod_attr.local())
+```
+
+```{python}
+attr_local.columns
+```
+
+```{python}
+dc.assign(dist=attr_local['param3'].values).explore('dist', scheme='quantiles', tooltip='dist',  cmap='RdBu_r',   style_kwds={"weight": 0.5},
+ tiles='cartodb positron')
+```
+
+```{python}
+mod_attr.fit()
+```
+
+```{python}
+mod_attr.params[-4:]
+```
+
+```{python}
+mod_attr.pseudoR2
+```
+
+```{python}
+# attraction-constrained
+a_statsmodels = smf.glm(
+    "weight ~ 1 + I(neighbor) + np.log(n_total_pop_origin) + np.log(median_household_income_origin) + np.log(p_nonhisp_black_persons_origin) + distance",
+    family=families.Poisson(),
+    data=dc_interaction
+).fit()
+```
+
+```{python}
+#| scrolled: true
+a_statsmodels.summary()
+```
+
+```{python}
+mod_attr.pseudoR2
+```
+
+```{python}
+mod_attr.params[-4:].round(4)
+```
+
+```{python}
+a_statsmodels.params[-4:]
+```
+
+```{python}
+# mcfadden
+1 - (a_statsmodels.llf / a_statsmodels.llnull)
+```
+
+```{python}
+# cohen
+(a_statsmodels.null_deviance - a_statsmodels.deviance) / a_statsmodels.null_deviance
+```
+
+```{python}
+# CS
+1 - np.exp((2 / a_statsmodels.nobs) * (a_statsmodels.llnull - a_statsmodels.llf))
+```
+
+```{python}
+a_statsmodels.pseudo_rsquared()
+```
+
+yep, the CS psueudo $R^2$ matches the reported one
+
+### Doubly-Constrained
+
+fixed effects for both origin and destination
+
+```{python}
+d = Doubly(
+    dc_interaction["weight"].values,
+    dc_interaction["focal"].values,
+    dc_interaction["neighbor"].values,
+    cost=dc_interaction["distance"],
+    cost_func="exp",
+).fit()
+```
+
+```{python}
+d.adj_pseudoR2
+```
+
+```{python}
+d.params[-1:].round(5)
+```
+
+```{python}
+d_statsmodels = smf.glm(
+    "weight ~ 1 + C(focal) + C(neighbor) + distance",
+    family=families.Poisson(),
+    data=dc_interaction
+).fit()
+```
+
+```{python}
+#| scrolled: true
+d_statsmodels.summary()
+```
+
+```{python}
+d.params[-1:]
+```
+
+```{python}
+d_statsmodels.params[-1]
+```
+
+
