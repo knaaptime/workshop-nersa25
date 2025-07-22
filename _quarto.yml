@@ -1,0 +1,62 @@
+project:
+  type: book
+
+jupyter: "conda-env-nersa25-py"
+
+execute: 
+  freeze: auto
+  cache: true
+
+book:
+
+  title: "Spatial: Networks, Interaction, & Econometrics for Migration"
+  author: 
+    - name: "Elijah Knaap"
+      email: eknaap@uci.edu
+      affiliation: 
+        # - Center for Open Geographical Science
+        # - San Diego State University
+          name: University of California, Irvine
+          department: Urban Planning & Public Policy
+      orcid: 0000-0001-7520-2238
+      url: https://knaaptime.com
+      degrees: Ph.D
+  date: "7/25/2025"
+  chapters:
+    - index.md
+    - notebooks/01_spatial_graphs.qmd
+    - notebooks/02_spatial_interaction.qmd
+    - notebooks/03_spatial_dependence.qmd
+  license: CC BY-NC-ND
+  search: true
+  repo-url: https://github.com/knaaptime/nersa25/
+  repo-subdir: docs
+  repo-actions: [edit, issue, source]
+  sharing: [twitter, linkedin, facebook]
+  open-graph: true
+  twitter-card: true
+  google-analytics: "G-0PG1JNLCXB"
+bibliography: nersa25.bib
+
+
+format:
+  html:
+    theme: 
+      light: 
+        - flatly
+        #- custom.scss
+        - brand
+      dark: 
+        - darkly
+        #- custom.scss
+        - brand
+    fontsize: 1em
+    linkcolor: "#4682B4"
+    css: styles.css
+    toc: true
+
+    code-links: 
+      - text: Open in Codespaces
+        href: https://codespaces.new/knaaptime/urban_analysis
+        icon: cloud
+
