@@ -1,0 +1,1953 @@
+{
+  "cells": [
+    {
+      "cell_type": "markdown",
+      "metadata": {},
+      "source": [
+        "---\n",
+        "title: Migration Graphs and Spatial Interaction\n",
+        "jupyter: conda-env-nersa25-py\n",
+        "---"
+      ],
+      "id": "03d0b90e"
+    },
+    {
+      "cell_type": "code",
+      "metadata": {},
+      "source": [
+        "import geopandas as gpd\n",
+        "import numpy as np\n",
+        "import networkx as nx\n",
+        "import pandas as pd\n",
+        "import statsmodels.formula.api as smf\n",
+        "from formulaic import Formula\n",
+        "from geosnap import DataStore\n",
+        "from geosnap import io as gio\n",
+        "from libpysal.graph import Graph\n",
+        "from lonboard import Map, PolygonLayer, ScatterplotLayer, basemap, viz\n",
+        "from lonboard.experimental import ArcLayer\n",
+        "from lonboard.layer_extension import BrushingExtension\n",
+        "from mapclassify.util import get_color_array\n",
+        "from spint.gravity import Attraction, Doubly, Gravity, Production\n",
+        "from statsmodels.api import families\n",
+        "%load_ext watermark\n",
+        "%watermark -a 'eli knaap'"
+      ],
+      "id": "cf57fadc",
+      "execution_count": null,
+      "outputs": []
+    },
+    {
+      "cell_type": "markdown",
+      "metadata": {},
+      "source": [
+        "## Demographic & Socioeconomic Data\n",
+        "\n",
+        "### ACS Data"
+      ],
+      "id": "48ce8f96"
+    },
+    {
+      "cell_type": "code",
+      "metadata": {},
+      "source": [
+        "datasets = DataStore()\n",
+        "\n",
+        "dc = gio.get_acs(datasets, state_fips=\"11\", years=2021, level=\"tract\")"
+      ],
+      "id": "a054c134",
+      "execution_count": null,
+      "outputs": []
+    },
+    {
+      "cell_type": "code",
+      "metadata": {},
+      "source": [
+        "dc.head()"
+      ],
+      "id": "6ea639fa",
+      "execution_count": null,
+      "outputs": []
+    },
+    {
+      "cell_type": "code",
+      "metadata": {},
+      "source": [
+        "dc.plot()"
+      ],
+      "id": "573e329f",
+      "execution_count": null,
+      "outputs": []
+    },
+    {
+      "cell_type": "markdown",
+      "metadata": {},
+      "source": [
+        "### LODES Data"
+      ],
+      "id": "9ea91153"
+    },
+    {
+      "cell_type": "code",
+      "metadata": {},
+      "source": [
+        "dc_flows = pd.read_csv(\n",
+        "    \"https://lehd.ces.census.gov/data/lodes/LODES8/dc/od/dc_od_main_JT00_2022.csv.gz\",\n",
+        "    converters={\"w_geocode\": str, \"h_geocode\": str},\n",
+        "    low_memory=False,\n",
+        "    encoding=\"latin1\",\n",
+        ")"
+      ],
+      "id": "65d23ccc",
+      "execution_count": null,
+      "outputs": []
+    },
+    {
+      "cell_type": "code",
+      "metadata": {},
+      "source": [
+        "dc_flows"
+      ],
+      "id": "d1da041f",
+      "execution_count": null,
+      "outputs": []
+    },
+    {
+      "cell_type": "markdown",
+      "metadata": {},
+      "source": [
+        "add tract-level geoids and drop extraneous columns"
+      ],
+      "id": "f7aa6c8d"
+    },
+    {
+      "cell_type": "code",
+      "metadata": {},
+      "source": [
+        "dc_flows[\"w_tr_geocode\"] = dc_flows[\"w_geocode\"].str[:11]\n",
+        "dc_flows[\"h_tr_geocode\"] = dc_flows[\"h_geocode\"].str[:11]\n",
+        "\n",
+        "dc_flows = dc_flows[[\"w_geocode\", \"h_geocode\", \"w_tr_geocode\", \"h_tr_geocode\", \"S000\"]]"
+      ],
+      "id": "e40163bf",
+      "execution_count": null,
+      "outputs": []
+    },
+    {
+      "cell_type": "markdown",
+      "metadata": {},
+      "source": [
+        "pretend like its a closed system, only consdidering intra-regional flows\n",
+        "\n",
+        "aggregate to tract-level flows (from block-level)"
+      ],
+      "id": "ea36a52a"
+    },
+    {
+      "cell_type": "code",
+      "metadata": {},
+      "source": [
+        "dc_flows = (\n",
+        "    dc_flows.groupby([\"w_tr_geocode\", \"h_tr_geocode\"])[\"S000\"].sum().reset_index()\n",
+        ")"
+      ],
+      "id": "a2b183a1",
+      "execution_count": null,
+      "outputs": []
+    },
+    {
+      "cell_type": "markdown",
+      "metadata": {},
+      "source": [
+        "this is an origin-destination matrix (as an adjacency list). `S000` is the number of flows between home census tract `h_tr_geocode` and work tract `w_tr_geocode`. There are many intra-tract flows $W_{ii}\\neq0$} (people commuting within the same tract, or *possibly* WFH, though that would be tough with LODES) and the flows are *directed* $W_{ij} \\neq W_{ji}$"
+      ],
+      "id": "9efe3518"
+    },
+    {
+      "cell_type": "code",
+      "metadata": {},
+      "source": [
+        "dc_flows"
+      ],
+      "id": "02503653",
+      "execution_count": null,
+      "outputs": []
+    },
+    {
+      "cell_type": "markdown",
+      "metadata": {},
+      "source": [
+        "create a pysal Graph to represent these flows. to represent the direction of flow correctly the focal column is home and neighbor is work (this shows the AM commute)"
+      ],
+      "id": "85499852"
+    },
+    {
+      "cell_type": "code",
+      "metadata": {},
+      "source": [
+        "dc_flow_graph = Graph.from_adjacency(\n",
+        "    adjacency=dc_flows,\n",
+        "    focal_col=\"h_tr_geocode\",\n",
+        "    neighbor_col=\"w_tr_geocode\",\n",
+        "    weight_col=\"S000\",\n",
+        ")"
+      ],
+      "id": "12eaf43c",
+      "execution_count": null,
+      "outputs": []
+    },
+    {
+      "cell_type": "code",
+      "metadata": {},
+      "source": [
+        "dc_flow_graph.summary()"
+      ],
+      "id": "f78c3ca0",
+      "execution_count": null,
+      "outputs": []
+    },
+    {
+      "cell_type": "code",
+      "metadata": {},
+      "source": [
+        "dc_flow_graph.adjacency.head()"
+      ],
+      "id": "bdadb193",
+      "execution_count": null,
+      "outputs": []
+    },
+    {
+      "cell_type": "markdown",
+      "metadata": {},
+      "source": [
+        "the `Graph` is ordered, and to visualize it correctly we want to align our other data to match this Graph; so stash the id/order"
+      ],
+      "id": "9d5e346a"
+    },
+    {
+      "cell_type": "code",
+      "metadata": {},
+      "source": [
+        "idx = dc_flow_graph.unique_ids"
+      ],
+      "id": "4da05f78",
+      "execution_count": null,
+      "outputs": []
+    },
+    {
+      "cell_type": "markdown",
+      "metadata": {},
+      "source": [
+        "create a geodataframe of centroids to visualize point-to-point flows, then reindex to re-order appropriately and drop observations with no flow."
+      ],
+      "id": "f3467c39"
+    },
+    {
+      "cell_type": "code",
+      "metadata": {},
+      "source": [
+        "dc_centroids = dc.set_geometry(dc.centroid)\n",
+        "dc_centroids = dc_centroids.set_index(\"geoid\").reindex(idx)"
+      ],
+      "id": "e50496c1",
+      "execution_count": null,
+      "outputs": []
+    },
+    {
+      "cell_type": "code",
+      "metadata": {},
+      "source": [
+        "dc_centroids.shape  # matches our Graph.n"
+      ],
+      "id": "6615c994",
+      "execution_count": null,
+      "outputs": []
+    },
+    {
+      "cell_type": "markdown",
+      "metadata": {},
+      "source": [
+        "## Visualize"
+      ],
+      "id": "14825bf8"
+    },
+    {
+      "cell_type": "code",
+      "metadata": {},
+      "source": [
+        "flows = dc_flow_graph.adjacency.reset_index()"
+      ],
+      "id": "8b660b69",
+      "execution_count": null,
+      "outputs": []
+    },
+    {
+      "cell_type": "code",
+      "metadata": {},
+      "source": [
+        "flows"
+      ],
+      "id": "d247d556",
+      "execution_count": null,
+      "outputs": []
+    },
+    {
+      "cell_type": "code",
+      "metadata": {},
+      "source": [
+        "# mapping of geoid to (point) geometry\n",
+        "dc.centroid.head()"
+      ],
+      "id": "f1a6d69d",
+      "execution_count": null,
+      "outputs": []
+    },
+    {
+      "cell_type": "code",
+      "metadata": {},
+      "source": [
+        "flows['focal'] = flows['focal'].replace(dc_centroids['geometry'].to_dict())\n",
+        "flows['neighbor'] = flows['neighbor'].replace(dc_centroids['geometry'].to_dict())"
+      ],
+      "id": "5443d97b",
+      "execution_count": null,
+      "outputs": []
+    },
+    {
+      "cell_type": "code",
+      "metadata": {},
+      "source": [
+        "flows"
+      ],
+      "id": "e7f1d609",
+      "execution_count": null,
+      "outputs": []
+    },
+    {
+      "cell_type": "code",
+      "metadata": {},
+      "source": [
+        "origins = gpd.GeoSeries(flows.focal).get_coordinates().values\n",
+        "\n",
+        "destinations = (\n",
+        "    gpd.GeoSeries(flows.neighbor).get_coordinates().values\n",
+        ")"
+      ],
+      "id": "96229b14",
+      "execution_count": null,
+      "outputs": []
+    },
+    {
+      "cell_type": "code",
+      "metadata": {},
+      "source": [
+        "origins"
+      ],
+      "id": "d45ac7dd",
+      "execution_count": null,
+      "outputs": []
+    },
+    {
+      "cell_type": "code",
+      "metadata": {},
+      "source": [
+        "from shapely import LineString"
+      ],
+      "id": "414cd34b",
+      "execution_count": null,
+      "outputs": []
+    },
+    {
+      "cell_type": "code",
+      "metadata": {},
+      "source": [
+        "LineString([flows['focal'][0], flows['neighbor'][0]])"
+      ],
+      "id": "e6f8ca74",
+      "execution_count": null,
+      "outputs": []
+    },
+    {
+      "cell_type": "code",
+      "metadata": {},
+      "source": [
+        "lines = gpd.GeoSeries([LineString([row[1]['focal'], row[1]['neighbor']]) for row in flows.iterrows()], crs=4326)"
+      ],
+      "id": "1622a5dd",
+      "execution_count": null,
+      "outputs": []
+    },
+    {
+      "cell_type": "code",
+      "metadata": {},
+      "source": [
+        "flow_lines =gpd.GeoDataFrame(flows['weight'], geometry=lines)"
+      ],
+      "id": "8d832a15",
+      "execution_count": null,
+      "outputs": []
+    },
+    {
+      "cell_type": "code",
+      "metadata": {},
+      "source": [
+        "flow_lines"
+      ],
+      "id": "b28ab2b1",
+      "execution_count": null,
+      "outputs": []
+    },
+    {
+      "cell_type": "code",
+      "metadata": {},
+      "source": [
+        "lines.explore()"
+      ],
+      "id": "da7cb76b",
+      "execution_count": null,
+      "outputs": []
+    },
+    {
+      "cell_type": "code",
+      "metadata": {},
+      "source": [
+        "viz(flow_lines)"
+      ],
+      "id": "ec61d6d4",
+      "execution_count": null,
+      "outputs": []
+    },
+    {
+      "cell_type": "code",
+      "metadata": {},
+      "source": [
+        "dc_flow_graph.adjacency"
+      ],
+      "id": "40091099",
+      "execution_count": null,
+      "outputs": []
+    },
+    {
+      "cell_type": "code",
+      "metadata": {},
+      "source": [
+        "flow_lines[['weight', 'geometry']]"
+      ],
+      "id": "3adbccb1",
+      "execution_count": null,
+      "outputs": []
+    },
+    {
+      "cell_type": "code",
+      "metadata": {},
+      "source": [
+        "brushing_extension = BrushingExtension()\n",
+        "brushing_radius = 300\n",
+        "\n",
+        "arc_layer = ArcLayer(\n",
+        "    table=flow_lines[['weight', 'geometry']].to_arrow(),\n",
+        "    get_width=flow_lines.weight.apply(lambda x: x**.7),\n",
+        "    get_source_position=origins,\n",
+        "    get_target_position=destinations,\n",
+        "    opacity=0.4,\n",
+        "    pickable=False,\n",
+        "    extensions=[brushing_extension],\n",
+        "    brushing_radius=brushing_radius,\n",
+        "    get_source_color=get_color_array(flow_lines.weight**.7, scheme='fisher_jenks', k=10, cmap='inferno_r'),\n",
+        "    get_target_color=get_color_array(flow_lines.weight**.7, scheme='fisher_jenks', k=10, cmap='inferno_r')\n",
+        ")\n",
+        "\n",
+        "source_gdf = gpd.GeoDataFrame(geometry=flows[\"focal\"], crs=4326)\n",
+        "target_gdf = gpd.GeoDataFrame(geometry=flows[\"neighbor\"], crs=4326)\n",
+        "\n",
+        "tgt = ScatterplotLayer.from_geopandas(\n",
+        "    target_gdf,\n",
+        "    radius_scale=30,\n",
+        "    pickable=True,\n",
+        "    stroked=False,\n",
+        "    filled=True,\n",
+        "    line_width_min_pixels=2,\n",
+        "    extensions=[brushing_extension],\n",
+        "    brushing_radius=brushing_radius,\n",
+        ")\n",
+        "\n",
+        "src = ScatterplotLayer.from_geopandas(\n",
+        "    source_gdf,\n",
+        "    radius_scale=15,\n",
+        "    pickable=False,\n",
+        "    stroked=False,\n",
+        "    filled=True,\n",
+        "    line_width_min_pixels=2,\n",
+        "    extensions=[brushing_extension],\n",
+        "    brushing_radius=brushing_radius,\n",
+        ")\n",
+        "\n",
+        "bounds = PolygonLayer.from_geopandas(\n",
+        "    dc,\n",
+        "    get_fill_color=[255, 255, 255, 200],\n",
+        "    stroked=True,\n",
+        "    line_width_min_pixels=0.5,\n",
+        "    pickable=False,\n",
+        "    opacity=0.3\n",
+        ")\n",
+        "\n",
+        "ogb = ScatterplotLayer.from_geopandas(\n",
+        "    source_gdf,\n",
+        "    get_fill_color=[255, 255, 255, 200],\n",
+        "    stroked=True,\n",
+        "    line_width_min_pixels=0.5,\n",
+        "    pickable=False,\n",
+        ")\n",
+        "\n",
+        "gmap = Map(layers=[bounds, src, tgt, arc_layer,ogb], picking_radius=500)\n",
+        "gmap.to_html('dc_flow_orig_orient.html')\n",
+        "\n",
+        "\n",
+        "gmap"
+      ],
+      "id": "f7d421f1",
+      "execution_count": null,
+      "outputs": []
+    },
+    {
+      "cell_type": "markdown",
+      "metadata": {},
+      "source": [
+        "the mouseover is keyed on *home* (origin), so the visualiztion shows flows *away* from the selected location. To focus on destinations/inflows, we can reverse the orientation in the ArcLayer"
+      ],
+      "id": "0e0148eb"
+    },
+    {
+      "cell_type": "code",
+      "metadata": {},
+      "source": [
+        "flows"
+      ],
+      "id": "205fed73",
+      "execution_count": null,
+      "outputs": []
+    },
+    {
+      "cell_type": "code",
+      "metadata": {},
+      "source": [
+        "dest_graph = Graph.from_adjacency(dc_flows,\n",
+        "    focal_col=\"w_tr_geocode\",\n",
+        "    neighbor_col=\"h_tr_geocode\",\n",
+        "    weight_col=\"S000\",\n",
+        ")\n",
+        "\n",
+        "dest_graph_flows = dest_graph.adjacency.reset_index()\n",
+        "\n",
+        "dest_graph_flows['focal'] = dest_graph_flows['focal'].replace(dc_centroids['geometry'].to_dict())\n",
+        "dest_graph_flows['neighbor'] = dest_graph_flows['neighbor'].replace(dc_centroids['geometry'].to_dict())\n",
+        "\n",
+        "dest_lines = gpd.GeoSeries([LineString([row[1]['focal'], row[1]['neighbor']]) for row in dest_graph_flows.iterrows()], crs=4326)\n",
+        "dest_lines =gpd.GeoDataFrame(dest_graph_flows['weight'], geometry=dest_lines)\n",
+        "\n",
+        "origins = gpd.GeoSeries(dest_graph_flows.focal).get_coordinates().values\n",
+        "\n",
+        "destinations = (\n",
+        "    gpd.GeoSeries(dest_graph_flows.neighbor).get_coordinates().values\n",
+        ")\n",
+        "\n",
+        "arc_layer = ArcLayer(\n",
+        "    table=dest_lines[['weight', 'geometry']].to_arrow(),\n",
+        "    get_width=dest_lines.weight.apply(lambda x: x**.7),\n",
+        "    get_source_position=origins,\n",
+        "    get_target_position=destinations,\n",
+        "    opacity=0.4,\n",
+        "    pickable=False,\n",
+        "    extensions=[brushing_extension],\n",
+        "    brushing_radius=brushing_radius,\n",
+        "    get_source_color=get_color_array(dest_lines.weight**.8, scheme='fisher_jenks', k=10, cmap='inferno_r'),\n",
+        "    get_target_color=get_color_array(dest_lines.weight**.6, scheme='fisher_jenks', k=10, cmap='inferno_r')\n",
+        ")\n",
+        "gmap = Map(layers=[bounds, src, tgt, arc_layer,ogb], picking_radius=500)\n",
+        "\n",
+        "gmap.to_html('dc_flow_dest_orient.html')\n",
+        "\n",
+        "gmap"
+      ],
+      "id": "ac2c8896",
+      "execution_count": null,
+      "outputs": []
+    },
+    {
+      "cell_type": "code",
+      "metadata": {},
+      "source": [
+        "dc = dc.set_index(\"geoid\")"
+      ],
+      "id": "2ea5e5f1",
+      "execution_count": null,
+      "outputs": []
+    },
+    {
+      "cell_type": "markdown",
+      "metadata": {},
+      "source": [
+        "## Migration as a Graph\n",
+        "\n",
+        "the matrix representation of the network shows us the level of flow from each origin-destination pair\n",
+        "\n",
+        "### Matrix Representation"
+      ],
+      "id": "0c67f89e"
+    },
+    {
+      "cell_type": "code",
+      "metadata": {},
+      "source": [
+        "dc_flow_graph.sparse.todense()"
+      ],
+      "id": "53e7a1b5",
+      "execution_count": null,
+      "outputs": []
+    },
+    {
+      "cell_type": "markdown",
+      "metadata": {},
+      "source": [
+        "there are lots of \"internal flows\", i.e. commutes that begin and end in the same tract (relatively large numbers along the diagonal). But it's common in migration studies to focus on inter-zonal flows, so we remove these--but first we will record the total numbers"
+      ],
+      "id": "9dce613f"
+    },
+    {
+      "cell_type": "code",
+      "metadata": {},
+      "source": [
+        "all_commutes = pd.Series(\n",
+        "    dc_flow_graph.sparse.sum(axis=1), index=dc_flow_graph.unique_ids, name=\"flows\"\n",
+        ")"
+      ],
+      "id": "9d599f95",
+      "execution_count": null,
+      "outputs": []
+    },
+    {
+      "cell_type": "markdown",
+      "metadata": {},
+      "source": [
+        "now save the total number of internal commutes (self-loops in the network; the diagonal of the matrix)"
+      ],
+      "id": "17c5bd57"
+    },
+    {
+      "cell_type": "code",
+      "metadata": {},
+      "source": [
+        "# how many self-loops (trips originating and ending in the same tract\n",
+        "# not sure if there's an easier way to get this, but its the diagonal of the weights matrix\n",
+        "intra_commutes = pd.Series(\n",
+        "    np.diag(dc_flow_graph.sparse.todense()),\n",
+        "    index=dc_flow_graph.unique_ids,\n",
+        "    name=\"self_loops\",\n",
+        ")\n",
+        "intra_share = intra_commutes / all_commutes"
+      ],
+      "id": "21c2a304",
+      "execution_count": null,
+      "outputs": []
+    },
+    {
+      "cell_type": "code",
+      "metadata": {},
+      "source": [
+        "intra_commutes"
+      ],
+      "id": "360d5ced",
+      "execution_count": null,
+      "outputs": []
+    },
+    {
+      "cell_type": "markdown",
+      "metadata": {},
+      "source": [
+        "just so we can take a look: internal commutes are a small but non-significant share of our job flow data"
+      ],
+      "id": "8a2cba81"
+    },
+    {
+      "cell_type": "code",
+      "metadata": {
+        "scrolled": true
+      },
+      "source": [
+        "intra_share"
+      ],
+      "id": "a10da47e",
+      "execution_count": null,
+      "outputs": []
+    },
+    {
+      "cell_type": "code",
+      "metadata": {},
+      "source": [
+        "intra_commutes.sum() / all_commutes.sum()"
+      ],
+      "id": "7e58cb3a",
+      "execution_count": null,
+      "outputs": []
+    },
+    {
+      "cell_type": "markdown",
+      "metadata": {},
+      "source": [
+        "in DC, 3.6% of the employees in LODES data have a job and workplace in the same census tract"
+      ],
+      "id": "5ded3d2f"
+    },
+    {
+      "cell_type": "code",
+      "metadata": {
+        "scrolled": true
+      },
+      "source": [
+        "dc.join(intra_commutes, how=\"left\").explore(\n",
+        "    \"self_loops\",\n",
+        "    style_kwds={\"weight\": 0.5},\n",
+        "    tiles=\"cartodb positron\",\n",
+        "    tooltip=\"self_loops\",\n",
+        "    scheme=\"fisherjenks\",\n",
+        "    cmap=\"RdBu_r\",\n",
+        ")"
+      ],
+      "id": "017c9a60",
+      "execution_count": null,
+      "outputs": []
+    },
+    {
+      "cell_type": "code",
+      "metadata": {},
+      "source": [
+        "dc.join(intra_share.rename(\"intra_share\"), how=\"left\").explore(\n",
+        "    \"intra_share\",\n",
+        "    style_kwds={\"weight\": 0.5},\n",
+        "    tiles=\"cartodb positron\",\n",
+        "    tooltip=\"intra_share\",\n",
+        "    scheme=\"fisherjenks\",\n",
+        "    cmap=\"RdBu_r\",\n",
+        ")"
+      ],
+      "id": "7d50d36c",
+      "execution_count": null,
+      "outputs": []
+    },
+    {
+      "cell_type": "markdown",
+      "metadata": {},
+      "source": [
+        "### Network Representation\n",
+        "\n",
+        "to look at directionality (sending regions vs receiving regions) we can use network method from `networkx`\n",
+        "\n",
+        "we only want to consider incoming and outgoing flows, so we first remove the diagonal in our `Graph` (and drop those observations), then convert to a `networkx` object"
+      ],
+      "id": "80e229e3"
+    },
+    {
+      "cell_type": "code",
+      "metadata": {},
+      "source": [
+        "dc_nx = dc_flow_graph.assign_self_weight(0).eliminate_zeros().to_networkx()"
+      ],
+      "id": "60342e25",
+      "execution_count": null,
+      "outputs": []
+    },
+    {
+      "cell_type": "markdown",
+      "metadata": {},
+      "source": [
+        "the *degree* of a node is the number of connections it has. Out-degree is the number of outgoing connections and in-degree is the number of incoming connections. For a focal observation, the *out degree* is the number of 'neighbors' it has (in spatial graph terminology), which is the same as its *cardinality*"
+      ],
+      "id": "a08cdd3a"
+    },
+    {
+      "cell_type": "code",
+      "metadata": {},
+      "source": [
+        "dc_flow_graph.assign_self_weight(0).eliminate_zeros().cardinalities"
+      ],
+      "id": "4c1bba7e",
+      "execution_count": null,
+      "outputs": []
+    },
+    {
+      "cell_type": "code",
+      "metadata": {},
+      "source": [
+        "pd.Series(dict(dc_nx.out_degree))"
+      ],
+      "id": "73444fbd",
+      "execution_count": null,
+      "outputs": []
+    },
+    {
+      "cell_type": "markdown",
+      "metadata": {},
+      "source": [
+        "when the degree measure is weighted, each link/edge/relationship is multiplied by by its weight. Thus the weighted degree for each node is the sum of its weights  (in spatial econometric parlance, this is equivalent to an un-transformed *spatial lag*)\n",
+        "\n",
+        "with out flow data, the weighted out degree measures the number of trips moving away from a home tract in the AM, and in-degree measures the number of trips incoming during the AM commute. The weighted degree (plain) is their sum, capturing the total fluctuation in the unit"
+      ],
+      "id": "ef60f9db"
+    },
+    {
+      "cell_type": "code",
+      "metadata": {},
+      "source": [
+        "out_degree = pd.Series(\n",
+        "    dict(dc_nx.out_degree(dc_nx, weight=\"weight\")), name=\"out_degree\"\n",
+        ")\n",
+        "in_degree = pd.Series(\n",
+        "    dict(dc_nx.in_degree(dc_nx, weight=\"weight\")), name=\"in_degree\"\n",
+        ")\n",
+        "\n",
+        "degree = pd.Series(dict(dc_nx.degree(dc_nx, weight=\"weight\")), name=\"degree\")"
+      ],
+      "id": "8f342c76",
+      "execution_count": null,
+      "outputs": []
+    },
+    {
+      "cell_type": "markdown",
+      "metadata": {},
+      "source": [
+        "note the weighted out-degree is the same as the *spatial lag* when the weights matrix is unstandardized"
+      ],
+      "id": "88750a97"
+    },
+    {
+      "cell_type": "code",
+      "metadata": {},
+      "source": [
+        "lag = dc_flow_graph.lag(np.ones(dc_flow_graph.n))"
+      ],
+      "id": "cb84d9f4",
+      "execution_count": null,
+      "outputs": []
+    },
+    {
+      "cell_type": "code",
+      "metadata": {},
+      "source": [
+        "pd.Series(lag).hist()"
+      ],
+      "id": "c8b25a38",
+      "execution_count": null,
+      "outputs": []
+    },
+    {
+      "cell_type": "code",
+      "metadata": {},
+      "source": [
+        "out_degree.hist()"
+      ],
+      "id": "87c9f76a",
+      "execution_count": null,
+      "outputs": []
+    },
+    {
+      "cell_type": "code",
+      "metadata": {},
+      "source": [
+        "pop_change = intra_commutes + in_degree - out_degree"
+      ],
+      "id": "81c08dde",
+      "execution_count": null,
+      "outputs": []
+    },
+    {
+      "cell_type": "code",
+      "metadata": {},
+      "source": [
+        "pop_change.hist()"
+      ],
+      "id": "1dd1bac7",
+      "execution_count": null,
+      "outputs": []
+    },
+    {
+      "cell_type": "code",
+      "metadata": {},
+      "source": [
+        "# daily population change\n",
+        "# internal movers plus immigration minus emigration\n",
+        "intra_commutes + in_degree - out_degree"
+      ],
+      "id": "80ebba07",
+      "execution_count": null,
+      "outputs": []
+    },
+    {
+      "cell_type": "code",
+      "metadata": {},
+      "source": [
+        "out_degree"
+      ],
+      "id": "fa69feb1",
+      "execution_count": null,
+      "outputs": []
+    },
+    {
+      "cell_type": "code",
+      "metadata": {
+        "scrolled": true
+      },
+      "source": [
+        "out_degree.sum() + intra_commutes.sum() == all_commutes.sum()"
+      ],
+      "id": "89f87293",
+      "execution_count": null,
+      "outputs": []
+    },
+    {
+      "cell_type": "code",
+      "metadata": {},
+      "source": [
+        "dc_flow_graph.adjacency.reset_index().groupby(\"neighbor\").sum().sum()"
+      ],
+      "id": "a6c90493",
+      "execution_count": null,
+      "outputs": []
+    },
+    {
+      "cell_type": "code",
+      "metadata": {},
+      "source": [
+        "out_degree.sum()"
+      ],
+      "id": "3406e41d",
+      "execution_count": null,
+      "outputs": []
+    },
+    {
+      "cell_type": "code",
+      "metadata": {},
+      "source": [
+        "out_degree.sum() / all_commutes.sum()"
+      ],
+      "id": "5ec60f57",
+      "execution_count": null,
+      "outputs": []
+    },
+    {
+      "cell_type": "code",
+      "metadata": {},
+      "source": [
+        "all_commutes.sum()"
+      ],
+      "id": "4e75a7d5",
+      "execution_count": null,
+      "outputs": []
+    },
+    {
+      "cell_type": "code",
+      "metadata": {},
+      "source": [
+        "import seaborn as sns\n",
+        "sns.heatmap(dc_flow_graph.sparse.todense())"
+      ],
+      "id": "d9973864",
+      "execution_count": null,
+      "outputs": []
+    },
+    {
+      "cell_type": "code",
+      "metadata": {},
+      "source": [
+        "out_degree.hist(bins=20)"
+      ],
+      "id": "a74fa1d0",
+      "execution_count": null,
+      "outputs": []
+    },
+    {
+      "cell_type": "code",
+      "metadata": {},
+      "source": [
+        "in_degree.sum()"
+      ],
+      "id": "cd8c6f73",
+      "execution_count": null,
+      "outputs": []
+    },
+    {
+      "cell_type": "code",
+      "metadata": {},
+      "source": [
+        "in_degree.hist(bins=20)"
+      ],
+      "id": "32b7a0e6",
+      "execution_count": null,
+      "outputs": []
+    },
+    {
+      "cell_type": "code",
+      "metadata": {},
+      "source": [
+        "dc.join(out_degree, how=\"left\").explore(\n",
+        "    \"out_degree\",\n",
+        "    style_kwds={\"weight\": 0.5},\n",
+        "    tiles=\"cartodb positron\",\n",
+        "    tooltip=\"out_degree\",\n",
+        "    scheme=\"fisherjenks\",\n",
+        ")"
+      ],
+      "id": "a5a1b1b5",
+      "execution_count": null,
+      "outputs": []
+    },
+    {
+      "cell_type": "code",
+      "metadata": {},
+      "source": [
+        "dc.join(in_degree, how=\"left\").explore(\n",
+        "    \"in_degree\",\n",
+        "    style_kwds={\"weight\": 0.5},\n",
+        "    linewidth=0.5,\n",
+        "    tiles=\"cartodb positron\",\n",
+        "    tooltip=\"in_degree\",\n",
+        "    scheme=\"fisherjenks\",\n",
+        ")"
+      ],
+      "id": "280a45a7",
+      "execution_count": null,
+      "outputs": []
+    },
+    {
+      "cell_type": "code",
+      "metadata": {},
+      "source": [
+        "dc.join((out_degree / all_commutes).rename(\"out_share\"), how=\"left\").plot(\n",
+        "    \"out_share\",\n",
+        "    linewidth=0.5,\n",
+        "    #style_kwds={\"weight\": 0.5},\n",
+        "    #tiles=\"cartodb positron\",\n",
+        "    #tooltip=\"out_share\",\n",
+        "    scheme=\"fisherjenks\",\n",
+        "    cmap=\"RdBu_r\",\n",
+        ")"
+      ],
+      "id": "a31670b6",
+      "execution_count": null,
+      "outputs": []
+    },
+    {
+      "cell_type": "markdown",
+      "metadata": {},
+      "source": [
+        "in-migration as a share of all change"
+      ],
+      "id": "77c30003"
+    },
+    {
+      "cell_type": "code",
+      "metadata": {},
+      "source": [
+        "(in_degree / (intra_commutes + in_degree)).hist()"
+      ],
+      "id": "2b8336ac",
+      "execution_count": null,
+      "outputs": []
+    },
+    {
+      "cell_type": "code",
+      "metadata": {
+        "scrolled": true
+      },
+      "source": [
+        "dc.join(\n",
+        "    (in_degree / (intra_commutes + in_degree)).rename(\"in_share\"), how=\"left\"\n",
+        ").plot(\n",
+        "    \"in_share\",\n",
+        "    #style_kwds={\"weight\": 0.5},\n",
+        "    #tiles=\"cartodb positron\",\n",
+        "    #tooltip=\"in_share\",\n",
+        "    linewidth=0.5,\n",
+        "    scheme=\"fisherjenks\",\n",
+        "    cmap=\"RdBu_r\",\n",
+        ")"
+      ],
+      "id": "01cef9e1",
+      "execution_count": null,
+      "outputs": []
+    },
+    {
+      "cell_type": "code",
+      "metadata": {},
+      "source": [
+        "(out_degree / all_commutes).hist()"
+      ],
+      "id": "0145b817",
+      "execution_count": null,
+      "outputs": []
+    },
+    {
+      "cell_type": "code",
+      "metadata": {},
+      "source": [
+        "dc.join(((in_degree - out_degree) / degree).rename(\"diff\"), how=\"left\").plot(\n",
+        "    \"diff\",\n",
+        "    #style_kwds={\"weight\": 0.5},\n",
+        "    #tiles=\"cartodb positron\",\n",
+        "    #tooltip=\"diff\",\n",
+        "    linewidth=0.5,\n",
+        "    scheme=\"fisherjenks\",\n",
+        "    cmap=\"RdBu_r\",\n",
+        "    legend=True\n",
+        ")"
+      ],
+      "id": "02395dd9",
+      "execution_count": null,
+      "outputs": []
+    },
+    {
+      "cell_type": "code",
+      "metadata": {},
+      "source": [
+        "out_degree / all_commutes"
+      ],
+      "id": "9e688bf5",
+      "execution_count": null,
+      "outputs": []
+    },
+    {
+      "cell_type": "markdown",
+      "metadata": {},
+      "source": [
+        "## Spatial Interaction Models\n",
+        "\n",
+        "Spatial interaction models are a classic regional science technique for modeling\n",
+        "flows (migration, commuting, trading, etc). Spatial interaction models try to\n",
+        "explain these flows between origin and destination as a function of origin\n",
+        "(push) and destination (pull) factors, attenuated by the cost of traveling\n",
+        "between them. The PySAL `spint` package implements a custom estimation engine\n",
+        "designed for fast performance on sparse design matrices (like those typical in\n",
+        "spatial interaction models), but they can also be fit using conventional\n",
+        "statistical packages like `statsmodels` albeit with a performance downgrade.\n",
+        "\n",
+        "In this model, the dependent variable $y$ is the level of flow between an origin\n",
+        "and destination. Our `Graph` is based on flows, which means $y$ is the value of\n",
+        "the \"weight\" held in `balt_flow_graph`, thus can use the adjacency list as our\n",
+        "core data structure.\n",
+        "\n",
+        "> Describing spatial interaction with an equation has a long and storied\n",
+        "> history, with Carrothers (1956), Sen and Smith (1995), and Farmer and Oshan\n",
+        "> (2017), among many others, furnishing point-in-time reviews of this topic in\n",
+        "> terms of its popular gravity model formulation, whose general form is as\n",
+        "> follows: \n",
+        " \n",
+        "$$F_{ij} = g[O_i, D_j, f(d_{ij})]$$\n",
+        "\n",
+        "> where $F_{ij} denotes the flow between origin $i$ and destination $j$ areal\n",
+        "> units, $O_i$ is some attribute variable(s) quantifying relevant features of\n",
+        "> origin $i$, $D_j$ is some attribute variable(s) quantifying relevant features\n",
+        "> of destination $j$, $g$ is some function (frequently multiplicative in form),\n",
+        "> and $f(d_{ij})$ is some deterrent. The initial functional form resulted in Eq.\n",
+        "> (7.1) being transformed to a log-linear version and a normally distributed\n",
+        "> error attached to it for estimation and inference purposes, yielding \n",
+        "\n",
+        "$$ log(F_{ij} + \\delta) = log(\\kappa) + \\alpha log(O_i)  + \\beta log(D_j) + \\gamma d_{ij} + \\epsilon_{ij} $$\n",
+        "\n",
+        "> where `log` denotes natural logarithm, $\\epsilon_{ij}$ is a normally\n",
+        "> distributed random error term, $\\delta \\geq 0$ added to the response variable\n",
+        "> $F_{ij}$ is a translation parameter needed if any $F_{ij} = 0$, and $\\kappa, \\alpha, \\beta$ and $\\gamma$ are linear regression coefficients; sometimes this\n",
+        "> equation includes $log(d_{ij})$ rather than $d_{ij}$. This specification\n",
+        "> results in exponents for the $O_i$ and $D_j$ variables when the equation is\n",
+        "> backtransformed to its multiplicative form. Difficulties associated with this\n",
+        "> implementation include that $F_{ij}$ often is a count for which many cases are\n",
+        "> zero (hence the need for $\\delta$).\n",
+        ">\n",
+        "> --- @griffith2019SpatialInteraction\n",
+        "\n",
+        "@getis1991SpatialInteraction @putman1989EffectsSpatial @griffith2019SpatialInteraction @fotheringham1989SpatialInteraction\n",
+        "\n",
+        "(as usual, there's an insane Tobler paper on the topic [@tobler1983AlternativeFormulation])"
+      ],
+      "id": "37f74495"
+    },
+    {
+      "cell_type": "code",
+      "metadata": {},
+      "source": [
+        "dc_flow_graph = dc_flow_graph.assign_self_weight(0).eliminate_zeros()"
+      ],
+      "id": "0fb79981",
+      "execution_count": null,
+      "outputs": []
+    },
+    {
+      "cell_type": "code",
+      "metadata": {},
+      "source": [
+        "# sparse representation\n",
+        "dc_interaction = (\n",
+        "    dc_flow_graph.assign_self_weight(0).eliminate_zeros().adjacency.reset_index()\n",
+        ")\n",
+        "dc_interaction"
+      ],
+      "id": "f3a0cbc9",
+      "execution_count": null,
+      "outputs": []
+    },
+    {
+      "cell_type": "code",
+      "metadata": {},
+      "source": [
+        "# for our dataset we want the full dense matrix\n",
+        "dc_interaction = pd.Series(dc_flow_graph.sparse.toarray().reshape(-1), \n",
+        "                             index=pd.MultiIndex.from_product([dc_flow_graph.unique_ids, \n",
+        "                                                               dc_flow_graph.unique_ids.rename('neighbor')])).rename('weight')"
+      ],
+      "id": "a84644cb",
+      "execution_count": null,
+      "outputs": []
+    },
+    {
+      "cell_type": "code",
+      "metadata": {},
+      "source": [
+        "dc_interaction = dc_interaction.reset_index()\n",
+        "dc_interaction"
+      ],
+      "id": "58da9604",
+      "execution_count": null,
+      "outputs": []
+    },
+    {
+      "cell_type": "markdown",
+      "metadata": {},
+      "source": [
+        "in spatial interaction terms focal=origin and neighbor=destination, so we can attach attributes of origins and destinations by doing left-joins on the y-variable successively based on focal, then neighbor"
+      ],
+      "id": "6492dfc2"
+    },
+    {
+      "cell_type": "code",
+      "metadata": {},
+      "source": [
+        "# first merge origin attributes\n",
+        "dc_interaction = dc_interaction.merge(\n",
+        "    dc.drop(columns=[\"geometry\"]), left_on=\"focal\", right_index=True, how=\"left\"\n",
+        ")"
+      ],
+      "id": "758637b6",
+      "execution_count": null,
+      "outputs": []
+    },
+    {
+      "cell_type": "code",
+      "metadata": {},
+      "source": [
+        "# now merge destination attributes\n",
+        "dc_interaction = dc_interaction.merge(\n",
+        "    dc.drop(columns=[\"geometry\"]),\n",
+        "    left_on=\"neighbor\",\n",
+        "    right_index=True,\n",
+        "    how=\"left\",\n",
+        "    suffixes=[\"_origin\", \"_destination\"],\n",
+        ")"
+      ],
+      "id": "5d156d8c",
+      "execution_count": null,
+      "outputs": []
+    },
+    {
+      "cell_type": "markdown",
+      "metadata": {},
+      "source": [
+        "note the suffixes differentiate columns referring to origin and destination values, e.g. `median_household_income_origin` and `median_household_income_destination`"
+      ],
+      "id": "efb118f9"
+    },
+    {
+      "cell_type": "code",
+      "metadata": {},
+      "source": [
+        "dc_interaction"
+      ],
+      "id": "7d06e3ff",
+      "execution_count": null,
+      "outputs": []
+    },
+    {
+      "cell_type": "code",
+      "metadata": {},
+      "source": [
+        "dc_interaction[\n",
+        "    [\"weight\", \"median_household_income_origin\", \"median_household_income_destination\"]\n",
+        "]"
+      ],
+      "id": "69eb86ff",
+      "execution_count": null,
+      "outputs": []
+    },
+    {
+      "cell_type": "markdown",
+      "metadata": {},
+      "source": [
+        "for a spatial interaction model we also need *another* Graph that measures the distance between observations. There are many ways to do this, but the easiest is to use a distance band weight where all observations are guaranteed to lie within the threshold (giving us a pairwise matrix)"
+      ],
+      "id": "899c5ac9"
+    },
+    {
+      "cell_type": "code",
+      "metadata": {},
+      "source": [
+        "dc = dc.to_crs(dc.estimate_utm_crs())"
+      ],
+      "id": "efba5064",
+      "execution_count": null,
+      "outputs": []
+    },
+    {
+      "cell_type": "markdown",
+      "metadata": {},
+      "source": [
+        "keep only tracts in the dataframe in our flow graph (origins), then get distance between observations with no decay"
+      ],
+      "id": "86ae4a42"
+    },
+    {
+      "cell_type": "code",
+      "metadata": {},
+      "source": [
+        "dc = dc[dc.index.isin(dc_flow_graph.unique_ids)]\n",
+        "dc_dist = Graph.build_distance_band(\n",
+        "    dc.set_geometry(dc.centroid), threshold=1e20, binary=False, alpha=1\n",
+        ")"
+      ],
+      "id": "b9877f02",
+      "execution_count": null,
+      "outputs": []
+    },
+    {
+      "cell_type": "code",
+      "metadata": {},
+      "source": [
+        "dc_dist.summary()"
+      ],
+      "id": "4b8491cb",
+      "execution_count": null,
+      "outputs": []
+    },
+    {
+      "cell_type": "code",
+      "metadata": {},
+      "source": [
+        "dc_dist.adjacency"
+      ],
+      "id": "8c2c418c",
+      "execution_count": null,
+      "outputs": []
+    },
+    {
+      "cell_type": "code",
+      "metadata": {},
+      "source": [
+        "# subset the distance graph by the travel graph (remove destinations we dont need)\n",
+        "# but this resets weights to 1\n",
+        "dc_dist_adj = dc_dist.intersection(dc_flow_graph).adjacency"
+      ],
+      "id": "b3cd6bd7",
+      "execution_count": null,
+      "outputs": []
+    },
+    {
+      "cell_type": "code",
+      "metadata": {},
+      "source": [
+        "# update with the old values\n",
+        "dc_dist_adj.update(dc_dist.adjacency)"
+      ],
+      "id": "37d07d81",
+      "execution_count": null,
+      "outputs": []
+    },
+    {
+      "cell_type": "code",
+      "metadata": {},
+      "source": [
+        "dc_interaction[\"distance\"] = dc_dist.sparse.toarray().reshape(-1)"
+      ],
+      "id": "8547ef40",
+      "execution_count": null,
+      "outputs": []
+    },
+    {
+      "cell_type": "code",
+      "metadata": {},
+      "source": [
+        "dc_interaction['weight'] = dc_interaction['weight'].astype(int)"
+      ],
+      "id": "64aca92a",
+      "execution_count": null,
+      "outputs": []
+    },
+    {
+      "cell_type": "markdown",
+      "metadata": {},
+      "source": [
+        "finally, we'll do some simple cleanup since we have missing values etc. "
+      ],
+      "id": "9d733da4"
+    },
+    {
+      "cell_type": "code",
+      "metadata": {},
+      "source": [
+        "# mean-impute missing values\n",
+        "dc_interaction = dc_interaction.fillna(dc_interaction.mean(numeric_only=True))\n",
+        "\n",
+        "# increment cols by 1 to make logs easier\n",
+        "dc_interaction['distance'] = dc_interaction['distance'] +1\n",
+        "\n",
+        "dc_interaction['n_total_pop_origin'] = dc_interaction['n_total_pop_origin'] +1\n",
+        "dc_interaction['n_total__pop_destination'] = dc_interaction['n_total_pop_destination'] +1\n",
+        "\n",
+        "dc_interaction['p_nonhisp_black_persons_origin'] = dc_interaction['p_nonhisp_black_persons_origin'] +1\n",
+        "dc_interaction['p_nonhisp_black_persons_destination'] = dc_interaction['p_nonhisp_black_persons_destination'] +1\n",
+        "\n",
+        "dc_interaction = dc_interaction.copy()"
+      ],
+      "id": "45cdf626",
+      "execution_count": null,
+      "outputs": []
+    },
+    {
+      "cell_type": "code",
+      "metadata": {},
+      "source": [
+        "dc_interaction"
+      ],
+      "id": "c16234b7",
+      "execution_count": null,
+      "outputs": []
+    },
+    {
+      "cell_type": "markdown",
+      "metadata": {},
+      "source": [
+        "## Using `spint` and `statsmodels`\n",
+        "\n",
+        "@liao2025DataDrivenApproach, @oshan2016PrimerWorking, @oshan2021SpatialStructure, @oshan2025GeneralizedAdditive, @rey2021PySALEcosystem, @wilson1967StatisticalTheory\n",
+        "\n",
+        "see @oshan2016PrimerWorking for a deeper discussion of spatial interaction models and their implementation details in PySAL\n",
+        "\n",
+        "### Gravity"
+      ],
+      "id": "66b8c4e6"
+    },
+    {
+      "cell_type": "code",
+      "metadata": {},
+      "source": [
+        "g = Gravity(\n",
+        "    dc_interaction[\"weight\"].values,\n",
+        "    o_vars=dc_interaction[[\"n_total_pop_origin\", \"median_household_income_origin\", \"p_nonhisp_black_persons_origin\"]].values,\n",
+        "    d_vars=dc_interaction[\n",
+        "        [\"n_total_pop_destination\", \"median_household_income_destination\",  \"p_nonhisp_black_persons_destination\"]\n",
+        "    ]\n",
+        "    .values,\n",
+        "    cost=dc_interaction[\"distance\"],\n",
+        "    cost_func=\"exp\",\n",
+        "    constant=True,\n",
+        ").fit()"
+      ],
+      "id": "11ad8b26",
+      "execution_count": null,
+      "outputs": []
+    },
+    {
+      "cell_type": "code",
+      "metadata": {},
+      "source": [
+        "g.params"
+      ],
+      "id": "4ef88eb7",
+      "execution_count": null,
+      "outputs": []
+    },
+    {
+      "cell_type": "code",
+      "metadata": {},
+      "source": [
+        "g.adj_pseudoR2"
+      ],
+      "id": "ab8b362b",
+      "execution_count": null,
+      "outputs": []
+    },
+    {
+      "cell_type": "code",
+      "metadata": {},
+      "source": [
+        "dc_interaction[\"distance\"]"
+      ],
+      "id": "7eb676da",
+      "execution_count": null,
+      "outputs": []
+    },
+    {
+      "cell_type": "code",
+      "metadata": {},
+      "source": [
+        "g_statsmodels = smf.glm(\n",
+        "    \"weight ~ 1 + np.log(n_total_pop_origin) + np.log(median_household_income_origin) + np.log(p_nonhisp_black_persons_origin) + np.log(n_total_pop_destination) + np.log(median_household_income_destination) + np.log(p_nonhisp_black_persons_destination) + distance\",\n",
+        "    family=families.Poisson(),\n",
+        "    data=dc_interaction,).fit(cov_type='HC0', scale='X2')"
+      ],
+      "id": "d7815591",
+      "execution_count": null,
+      "outputs": []
+    },
+    {
+      "cell_type": "code",
+      "metadata": {},
+      "source": [
+        "g_statsmodels.summary()"
+      ],
+      "id": "c4d4f57e",
+      "execution_count": null,
+      "outputs": []
+    },
+    {
+      "cell_type": "code",
+      "metadata": {},
+      "source": [
+        "g.params.round(4)"
+      ],
+      "id": "8b947b2d",
+      "execution_count": null,
+      "outputs": []
+    },
+    {
+      "cell_type": "code",
+      "metadata": {},
+      "source": [
+        "out = g_statsmodels.params.rename(\"statsmdodels\").to_frame().copy()\n",
+        "out[\"spint\"] = g.params.T.round(4)"
+      ],
+      "id": "05640c29",
+      "execution_count": null,
+      "outputs": []
+    },
+    {
+      "cell_type": "markdown",
+      "metadata": {},
+      "source": [
+        "compare coefs in a table format"
+      ],
+      "id": "604ce726"
+    },
+    {
+      "cell_type": "code",
+      "metadata": {},
+      "source": [
+        "out"
+      ],
+      "id": "6f3f18d6",
+      "execution_count": null,
+      "outputs": []
+    },
+    {
+      "cell_type": "markdown",
+      "metadata": {},
+      "source": [
+        "### Production-Constrained\n",
+        "\n",
+        "unit-level fixed effects for origins"
+      ],
+      "id": "08de4265"
+    },
+    {
+      "cell_type": "code",
+      "metadata": {},
+      "source": [
+        "mod_prod = Production(\n",
+        "    dc_interaction[\"weight\"].values,\n",
+        "    dc_interaction[\"focal\"].values,\n",
+        "    d_vars=dc_interaction[\n",
+        "        [\"n_total_pop_destination\", \"median_household_income_destination\", \"p_nonhisp_black_persons_destination\"]\n",
+        "    ]\n",
+        "    .values,\n",
+        "    cost=dc_interaction[\"distance\"].values,\n",
+        "    cost_func=\"exp\",\n",
+        ").fit()"
+      ],
+      "id": "c6d65c6e",
+      "execution_count": null,
+      "outputs": []
+    },
+    {
+      "cell_type": "code",
+      "metadata": {},
+      "source": [
+        "mod_prod.params[-4:]"
+      ],
+      "id": "ff712f5a",
+      "execution_count": null,
+      "outputs": []
+    },
+    {
+      "cell_type": "code",
+      "metadata": {},
+      "source": [
+        "mod_prod.adj_pseudoR2"
+      ],
+      "id": "754493ab",
+      "execution_count": null,
+      "outputs": []
+    },
+    {
+      "cell_type": "markdown",
+      "metadata": {},
+      "source": [
+        "also do the power version/"
+      ],
+      "id": "7b76bf59"
+    },
+    {
+      "cell_type": "code",
+      "metadata": {},
+      "source": [
+        "mod_prod_pow = Production(\n",
+        "    dc_interaction[\"weight\"].values,\n",
+        "    dc_interaction[\"focal\"].values,\n",
+        "    d_vars=dc_interaction[\n",
+        "        [\"n_total_pop_destination\", \"median_household_income_destination\", \"p_nonhisp_black_persons_destination\"]\n",
+        "    ]\n",
+        "    .values,\n",
+        "    cost=dc_interaction[\"distance\"].values,\n",
+        "    cost_func=\"pow\",\n",
+        ").fit()"
+      ],
+      "id": "f1bf0b97",
+      "execution_count": null,
+      "outputs": []
+    },
+    {
+      "cell_type": "code",
+      "metadata": {},
+      "source": [
+        "mod_prod_pow.params[-4:]"
+      ],
+      "id": "8d8917f1",
+      "execution_count": null,
+      "outputs": []
+    },
+    {
+      "cell_type": "code",
+      "metadata": {},
+      "source": [
+        "mod_prod_pow.adj_pseudoR2"
+      ],
+      "id": "de2ccd33",
+      "execution_count": null,
+      "outputs": []
+    },
+    {
+      "cell_type": "markdown",
+      "metadata": {},
+      "source": [
+        "### Attraction-Constrained\n",
+        "\n",
+        "unit-level fixed effects for destinations"
+      ],
+      "id": "9ac4deb3"
+    },
+    {
+      "cell_type": "code",
+      "metadata": {},
+      "source": [
+        "mod_attr = Attraction(\n",
+        "    flows=dc_interaction[\"weight\"].values,\n",
+        "    destinations=dc_interaction[\"neighbor\"].values,\n",
+        "    o_vars=dc_interaction[[\"n_total_pop_origin\", \"median_household_income_origin\",  \"p_nonhisp_black_persons_origin\"]]\n",
+        "    .values,\n",
+        "    cost=dc_interaction[\"distance\"].values,\n",
+        "    cost_func=\"exp\",\n",
+        ")"
+      ],
+      "id": "860a3576",
+      "execution_count": null,
+      "outputs": []
+    },
+    {
+      "cell_type": "markdown",
+      "metadata": {},
+      "source": [
+        "the constrained models can be calibrated *locally*, i.e. each observation has its own set of coefficients, thus we can map the effect of a given parameter, say distance:"
+      ],
+      "id": "cbd640a0"
+    },
+    {
+      "cell_type": "code",
+      "metadata": {},
+      "source": [
+        "attr_local = pd.DataFrame(mod_attr.local())"
+      ],
+      "id": "6724d830",
+      "execution_count": null,
+      "outputs": []
+    },
+    {
+      "cell_type": "code",
+      "metadata": {},
+      "source": [
+        "attr_local.columns"
+      ],
+      "id": "d4ce5489",
+      "execution_count": null,
+      "outputs": []
+    },
+    {
+      "cell_type": "code",
+      "metadata": {},
+      "source": [
+        "dc.assign(dist=attr_local['param3'].values).explore('dist', scheme='quantiles', tooltip='dist',  cmap='RdBu_r',   style_kwds={\"weight\": 0.5},\n",
+        " tiles='cartodb positron')"
+      ],
+      "id": "b7e1f877",
+      "execution_count": null,
+      "outputs": []
+    },
+    {
+      "cell_type": "code",
+      "metadata": {},
+      "source": [
+        "mod_attr.fit()"
+      ],
+      "id": "48f8248a",
+      "execution_count": null,
+      "outputs": []
+    },
+    {
+      "cell_type": "code",
+      "metadata": {},
+      "source": [
+        "mod_attr.params[-4:]"
+      ],
+      "id": "c550575c",
+      "execution_count": null,
+      "outputs": []
+    },
+    {
+      "cell_type": "code",
+      "metadata": {},
+      "source": [
+        "mod_attr.pseudoR2"
+      ],
+      "id": "5dbc936c",
+      "execution_count": null,
+      "outputs": []
+    },
+    {
+      "cell_type": "code",
+      "metadata": {},
+      "source": [
+        "# attraction-constrained\n",
+        "a_statsmodels = smf.glm(\n",
+        "    \"weight ~ 1 + I(neighbor) + np.log(n_total_pop_origin) + np.log(median_household_income_origin) + np.log(p_nonhisp_black_persons_origin) + distance\",\n",
+        "    family=families.Poisson(),\n",
+        "    data=dc_interaction\n",
+        ").fit()"
+      ],
+      "id": "4e552886",
+      "execution_count": null,
+      "outputs": []
+    },
+    {
+      "cell_type": "code",
+      "metadata": {
+        "scrolled": true
+      },
+      "source": [
+        "a_statsmodels.summary()"
+      ],
+      "id": "710a51fd",
+      "execution_count": null,
+      "outputs": []
+    },
+    {
+      "cell_type": "code",
+      "metadata": {},
+      "source": [
+        "mod_attr.pseudoR2"
+      ],
+      "id": "5eaf5ef0",
+      "execution_count": null,
+      "outputs": []
+    },
+    {
+      "cell_type": "code",
+      "metadata": {},
+      "source": [
+        "mod_attr.params[-4:].round(4)"
+      ],
+      "id": "ac5b81f4",
+      "execution_count": null,
+      "outputs": []
+    },
+    {
+      "cell_type": "code",
+      "metadata": {},
+      "source": [
+        "a_statsmodels.params[-4:]"
+      ],
+      "id": "cbcc4dec",
+      "execution_count": null,
+      "outputs": []
+    },
+    {
+      "cell_type": "code",
+      "metadata": {},
+      "source": [
+        "# mcfadden\n",
+        "1 - (a_statsmodels.llf / a_statsmodels.llnull)"
+      ],
+      "id": "b19834bd",
+      "execution_count": null,
+      "outputs": []
+    },
+    {
+      "cell_type": "code",
+      "metadata": {},
+      "source": [
+        "# cohen\n",
+        "(a_statsmodels.null_deviance - a_statsmodels.deviance) / a_statsmodels.null_deviance"
+      ],
+      "id": "a7548143",
+      "execution_count": null,
+      "outputs": []
+    },
+    {
+      "cell_type": "code",
+      "metadata": {},
+      "source": [
+        "# CS\n",
+        "1 - np.exp((2 / a_statsmodels.nobs) * (a_statsmodels.llnull - a_statsmodels.llf))"
+      ],
+      "id": "97e050b9",
+      "execution_count": null,
+      "outputs": []
+    },
+    {
+      "cell_type": "code",
+      "metadata": {},
+      "source": [
+        "a_statsmodels.pseudo_rsquared()"
+      ],
+      "id": "318008c3",
+      "execution_count": null,
+      "outputs": []
+    },
+    {
+      "cell_type": "markdown",
+      "metadata": {},
+      "source": [
+        "yep, the CS psueudo $R^2$ matches the reported one\n",
+        "\n",
+        "### Doubly-Constrained\n",
+        "\n",
+        "fixed effects for both origin and destination"
+      ],
+      "id": "303ea938"
+    },
+    {
+      "cell_type": "code",
+      "metadata": {},
+      "source": [
+        "d = Doubly(\n",
+        "    dc_interaction[\"weight\"].values,\n",
+        "    dc_interaction[\"focal\"].values,\n",
+        "    dc_interaction[\"neighbor\"].values,\n",
+        "    cost=dc_interaction[\"distance\"],\n",
+        "    cost_func=\"exp\",\n",
+        ").fit()"
+      ],
+      "id": "f35b8b8b",
+      "execution_count": null,
+      "outputs": []
+    },
+    {
+      "cell_type": "code",
+      "metadata": {},
+      "source": [
+        "d.adj_pseudoR2"
+      ],
+      "id": "ba4da8e3",
+      "execution_count": null,
+      "outputs": []
+    },
+    {
+      "cell_type": "code",
+      "metadata": {},
+      "source": [
+        "d.params[-1:].round(5)"
+      ],
+      "id": "a1962741",
+      "execution_count": null,
+      "outputs": []
+    },
+    {
+      "cell_type": "code",
+      "metadata": {},
+      "source": [
+        "d_statsmodels = smf.glm(\n",
+        "    \"weight ~ 1 + C(focal) + C(neighbor) + distance\",\n",
+        "    family=families.Poisson(),\n",
+        "    data=dc_interaction\n",
+        ").fit()"
+      ],
+      "id": "cb863d7b",
+      "execution_count": null,
+      "outputs": []
+    },
+    {
+      "cell_type": "code",
+      "metadata": {
+        "scrolled": true
+      },
+      "source": [
+        "d_statsmodels.summary()"
+      ],
+      "id": "af46f45f",
+      "execution_count": null,
+      "outputs": []
+    },
+    {
+      "cell_type": "code",
+      "metadata": {},
+      "source": [
+        "d.params[-1:]"
+      ],
+      "id": "0a10c543",
+      "execution_count": null,
+      "outputs": []
+    },
+    {
+      "cell_type": "code",
+      "metadata": {},
+      "source": [
+        "d_statsmodels.params[-1]"
+      ],
+      "id": "1c32e296",
+      "execution_count": null,
+      "outputs": []
+    }
+  ],
+  "metadata": {
+    "kernelspec": {
+      "name": "conda-env-nersa25-py",
+      "language": "python",
+      "display_name": "Python [conda env:nersa25]",
+      "path": "/Users/knaaptime/Library/Jupyter/kernels/conda-env-nersa25-py"
+    }
+  },
+  "nbformat": 4,
+  "nbformat_minor": 5
+}
