@@ -4,7 +4,7 @@ project:
 jupyter: "conda-env-nersa25-py"
 
 execute: 
-  freeze: true
+  freeze: auto
   cache: true
 
 book:

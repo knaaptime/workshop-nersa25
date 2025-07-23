@@ -12,6 +12,7 @@ from formulaic import Formula
 from geosnap import DataStore
 from geosnap import io as gio
 from libpysal.graph import Graph
+from shapely import LineString
 from spreg import GMM_Error, GM_Lag
 %load_ext watermark
 %watermark -a 'eli knaap'
@@ -57,6 +58,9 @@ $$ \log(F_{ij} +
 $$ u = \lambda Wu +\epsilon_{ij} $$
 
 ## Data Preparation
+
+We will follow the same data processing steps as in the previous sections,
+collecting data for Washington D.C. and converting it into a matrix of flows.
 
 ```{python}
 datasets = DataStore()

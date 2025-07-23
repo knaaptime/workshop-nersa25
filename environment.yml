@@ -24,3 +24,4 @@ dependencies:
   - pyarrow
   - formulaic
   - quarto
+  - jupyter-cache
