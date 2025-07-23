@@ -1,5 +1,6 @@
 # pixi environments
 .pixi
-*.ipynb_checkpoints
+notebooks/.ipynb_checkpoints
 /.quarto/
 _freeze
+notebooks/.jupyter_cache

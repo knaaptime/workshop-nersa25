@@ -3,157 +3,103 @@ title: Spatial Interaction with Spatial Dependence
 jupyter: conda-env-nersa25-py
 ---
 
-
-
-what if our flows are not independent?
-
-@fischer2008ModelingSpatial, @lesage2007KnowledgeSpillovers, @lesage2008SpatialEconometric, @lesage2010SpatialEconometric, @lesage2013SpatialInteraction, @lesage2014WhatRegional, @thomas-agnan2014SpatialEconometric
-
 ```{python}
 import geopandas as gpd
 import numpy as np
 import pandas as pd
+import scipy
+from formulaic import Formula
 from geosnap import DataStore
 from geosnap import io as gio
 from libpysal.graph import Graph
-import scipy
-from formulaic import Formula
 from spreg import GMM_Error, GM_Lag
+%load_ext watermark
+%watermark -a 'eli knaap'
 ```
 
-like any regression model, a critical assumption is that observations are *independent* from one another. And like any model using spatial data, the model is misspecified if residuals are spatially autocorrelated (indicating the input data fail the independence criterion). We can use spatial econometric approaches to handle this situation, albeit with some minor modifications because 
+What if our flows are not independent?
+
+Like any regression, a critical assumption in spatial interaction models
+is that observations are *independent* from one another. And like any model
+using spatial data, the model is misspecified if residuals are spatially
+autocorrelated (indicating the input data fail the independence criterion). We
+can use spatial econometric approaches to handle this situation, albeit with
+some minor modifications because
 
 - autocorrelation may come from origins, destinations, or both
 - we need to approximate the data using a log-linear model instead of proper Poisson
 
-Approaches for estimating spatial lag models are described in @lesage2007KnowledgeSpillovers and @lesage2008SpatialEconometric while error models are decribed by @fischer2008ModelingSpatial, the latter two of which use conventional estimation techniques with specialized $W$ matrices based on the notion of neighboring origins or neighboring destinations.
+Approaches for estimating spatial lag models are described in
+@lesage2007KnowledgeSpillovers and @lesage2008SpatialEconometric while error
+models are decribed by @fischer2008ModelingSpatial, the latter two of which use
+conventional estimation techniques with specialized $W$ matrices based on the
+notion of neighboring origins or neighboring destinations. We explore how to
+conduct these analyses below. For further background, consult
+@fischer2008ModelingSpatial, @lesage2007KnowledgeSpillovers,
+@lesage2008SpatialEconometric, @lesage2010SpatialEconometric,
+@lesage2013SpatialInteraction, @lesage2014WhatRegional,
+@thomas-agnan2014SpatialEconometric @ord1975EstimationMethods.
 
-## Demographic & Socioeconomic Data
+## Spatial Econometric Models
 
-### ACS Data
+In the following example we will focus on the spatial interaction specificaiton of two workhorse models in spatial econometrics: the "spatial lag" and "spatial error" models. Following the log-linear specification from the prior section, these are given by
+
+### Spatial Lag
+
+$$ \log(F_{ij} + 
+\delta) =  \log(\kappa) + \rho W\log(F_{ij}+\delta) + \alpha \log(O_i)  + \beta \log(D_j) + \gamma d_{ij} + \epsilon_{ij} $$
+
+### Spatial Error
+
+$$ \log(F_{ij} + 
+\delta) = \log(\kappa) +  \alpha \log(O_i)  + \beta \log(D_j) + \gamma d_{ij} + u $$
+
+$$ u = \lambda Wu +\epsilon_{ij} $$
+
+## Data Preparation
 
 ```{python}
 datasets = DataStore()
 
 dc = gio.get_acs(datasets, state_fips="11", years=2021, level="tract")
-```
 
-```{python}
-dc.head()
-```
-
-```{python}
-dc.plot()
-```
-
-### LODES Data
-
-```{python}
 dc_flows = pd.read_csv(
     "https://lehd.ces.census.gov/data/lodes/LODES8/dc/od/dc_od_main_JT00_2022.csv.gz",
     converters={"w_geocode": str, "h_geocode": str},
     low_memory=False,
     encoding="latin1",
 )
-```
-
-```{python}
-dc_flows
-```
-
-add tract-level geoids and drop extraneous columns
-
-```{python}
 dc_flows["w_tr_geocode"] = dc_flows["w_geocode"].str[:11]
 dc_flows["h_tr_geocode"] = dc_flows["h_geocode"].str[:11]
-
 dc_flows = dc_flows[["w_geocode", "h_geocode", "w_tr_geocode", "h_tr_geocode", "S000"]]
-```
-
-aggregate to tract-level flows (from block-level)
-
-```{python}
 dc_flows = (
     dc_flows.groupby(["w_tr_geocode", "h_tr_geocode"])["S000"].sum().reset_index()
 )
-```
 
-this is an origin-destination matrix (as an adjacency list). `S000` is the number of flows between home census tract `h_tr_geocode` and work tract `w_tr_geocode`. There are many intra-tract flows $W_{ii}\neq0$} (people commuting within the same tract, or *possibly* WFH, though that would be tough with LODES) and the flows are *directed* $W_{ij} \neq W_{ji}$
-
-```{python}
-dc_flows
-```
-
-create a pysal Graph to represent these flows. to represent the direction of flow correctly the focal column is home and neighbor is work (this shows the AM commute)
-
-```{python}
 dc_flow_graph = Graph.from_adjacency(
     adjacency=dc_flows,
     focal_col="h_tr_geocode",
     neighbor_col="w_tr_geocode",
     weight_col="S000",
 )
-```
 
-```{python}
-dc_flow_graph.summary(asymmetries=True)
-```
-
-```{python}
-23306 / 206**2
-```
-
-```{python}
-dc_flow_graph.adjacency.head()
-```
-
-the `Graph` is ordered, and to visualize it correctly we want to align our other data to match this Graph; so stash the id/order
-
-```{python}
-idx = dc_flow_graph.unique_ids
-```
-
-create a geodataframe of centroids to visualize point-to-point flows, then reindex to re-order appropriately and drop observations with no flow.
-
-```{python}
-dc_centroids = dc.set_geometry(dc.centroid)
-dc_centroids = dc_centroids.set_index("geoid").reindex(idx)
-```
-
-```{python}
-dc_centroids.shape  # matches our Graph.n
-```
-
-```{python}
 dc = dc.set_index("geoid")
-```
 
-```{python}
 # for our dataset we want the full dense matrix
-dc_interaction = pd.Series(dc_flow_graph.sparse.toarray().reshape(-1), 
-                             index=pd.MultiIndex.from_product([dc_flow_graph.unique_ids, 
-                                                               dc_flow_graph.unique_ids.rename('neighbor')])).rename('weight')
-```
+dc_interaction = pd.Series(
+    dc_flow_graph.sparse.toarray().reshape(-1),
+    index=pd.MultiIndex.from_product(
+        [dc_flow_graph.unique_ids, dc_flow_graph.unique_ids.rename("neighbor")]
+    ),
+).rename("weight")
 
-```{python}
 dc_interaction = dc_interaction.reset_index()
-dc_interaction
-```
 
-```{python}
-dc.shape[0] ** 2
-```
-
-in spatial interaction terms focal=origin and neighbor=destination, so we can attach attributes of origins and destinations by doing left-joins on the y-variable successively based on focal, then neighbor
-
-```{python}
 # first merge origin attributes
 dc_interaction = dc_interaction.merge(
     dc.drop(columns=["geometry"]), left_on="focal", right_index=True, how="left"
 )
-```
 
-```{python}
 # now merge destination attributes
 dc_interaction = dc_interaction.merge(
     dc.drop(columns=["geometry"]),
@@ -164,27 +110,17 @@ dc_interaction = dc_interaction.merge(
 )
 ```
 
-note the suffixes differentiate columns referring to origin and destination values, e.g. `median_household_income_origin` and `median_household_income_destination`
+## A Confluence of `Graphs`
 
-```{python}
-dc_interaction
-```
+What's "near" to a *flow*?
 
-```{python}
-dc_interaction[
-    ["weight", "median_household_income_origin", "median_household_income_destination"]
-]
-```
-
-for a spatial interaction model we also need *another* Graph that measures the distance between observations. There are many ways to do this, but the easiest is to use a distance band weight where all observations are guaranteed to lie within the threshold (giving us a pairwise matrix)
-
-```{python}
-dc = dc.to_crs(dc.estimate_utm_crs())
-```
+### Distance Graph
 
 keep only tracts in the dataframe in our flow graph (origins), then get distance between observations with no decay
 
 ```{python}
+dc = dc.to_crs(dc.estimate_utm_crs())
+
 dc = dc[dc.index.isin(dc_flow_graph.unique_ids)]
 
 dc_dist = Graph.build_distance_band(
@@ -204,27 +140,17 @@ dc_dist.adjacency
 # subset the distance graph by the travel graph (remove destinations we dont need)
 # but this resets weights to 1
 dc_dist_adj = dc_dist.intersection(dc_flow_graph).adjacency
-```
 
-```{python}
 # update with the old values
 dc_dist_adj.update(dc_dist.adjacency)
-```
 
-```{python}
 dc_interaction["distance"] = dc_dist.sparse.toarray().reshape(-1)
-```
 
-```{python}
 dc_interaction['weight'] = dc_interaction['weight'].astype(int)
 ```
 
-## Spatial Weights (Graphs) for OD-Flows
 
-In this case observations are neighbors if:
-
-- there is a flow between o and d
-- if o_i shares a border with o_j
+### Contiguity Graph
 
 ```{python}
 contg = Graph.build_contiguity(dc)
@@ -234,16 +160,53 @@ contg = Graph.build_contiguity(dc)
 contg
 ```
 
+Imagine you had a flow that moved from north to south like the map below. The
+'neighborhood' of this flow might be the tracts surrounding the origin in the
+north, those surrounding the destination in the south, or a combination thereof.
+
 ```{python}
+focus_tracts = ["11001007703", "11001001804"]
+
 contg.explore(dc.centroid)
+
+m = dc.explore(tiles="CartoDB Positron", tooltip=["geoid"])
+contg.explore(
+    dc,
+    m=m,
+    focal=focus_tracts,
+    edge_kws=dict(color="red"),
+    node_kws=dict(style_kwds=dict(radius=4, color="yellow")),
+)
+l = gpd.GeoDataFrame(geometry=[LineString(dc.loc[focus_tracts].geometry.centroid.get_coordinates()[['x','y']].values)], crs=dc.crs)
+l.explore(m=m, color='gray', style_kwds={'weight':5})
 ```
+
+### Spatial Graphs for Origin-Destination Flows
 
 the `contg` Graph encodes flows as neighbors if the origin tracts share a border.
 
-but we need to multiply that graph to get it into the correct dimensions to match our flow data. Following @lesage2008SpatialEconometric and @fischer2008ModelingSpatial we do this via a Kronecker product between our flow and contiguity graphs to create the $W$ used in the model.
+but we need to multiply that graph to get it into the correct dimensions to
+match our flow data. Following @lesage2008SpatialEconometric and
+@fischer2008ModelingSpatial we do this via a
+[*Kronecker* product](https://en.wikipedia.org/wiki/Kronecker_product) between
+our flow and contiguity graphs to create the graph ($W$) used in the model.
 
+![Kronecker Product](../img/kron.png)
 
-take the Kronecker product of the two Graphs, then reinstantiate a new one
+$G_{flow} \otimes G_{cont}$, where $\otimes$ is the Kronecker product of the
+flow graph and contiguity graphs that defines connectivity between origin and
+destination observations.
+
+In this case observations are neighbors if:
+
+- there is a flow between o and d
+- if o_i shares a border with o_j
+- three distinct possibilities depending on how the flow graph is ordered
+  - origin-centric weights
+  - destination-centric weights
+  - OD-centric weights (union or sum of oW and dW)
+
+take the Kronecker product of the two Graphs, then re-instantiate a new one
 
 ```{python}
 kg = Graph.from_sparse(scipy.sparse.kron(dc_flow_graph.transform("b").sparse, contg.sparse))
@@ -283,7 +246,11 @@ kg = kg.transform('r')
 
 ## Main Model Specification
 
-> "Note in some cases yij = 0, indicating the absence of flows from i to j. This leads to the so-called zero problem,  since the logarithm then is undefined. There are several pragmatic solutions to this problem, with adding a  small constant to the zero elements of [yij ] being widely used. Here we added 0.08." [@fischer2008ModelingSpatial]
+> "Note in some cases yij = 0, indicating the absence of flows from i to j. This
+> leads to the so-called zero problem, since the logarithm then is undefined.
+> There are several pragmatic solutions to this problem, with adding a small
+> constant to the zero elements of [yij ] being widely used. Here we added
+> 0.08." [@fischer2008ModelingSpatial]
 
 that gives our $y$ variable a distribution like this
 
@@ -317,10 +284,6 @@ y, x = f.get_model_matrix(
 #| scrolled: true
 y
 ```
-
-
-
-
 
 
 ## Spatial Lag
@@ -468,6 +431,18 @@ print(flow_error_od.summary)
 flow_error_od.output
 ```
 
+::: callout-note :::
+
+As an alternative to the spatial econometric specifications illustrated above,
+@liao2025DataDrivenApproach recently described a different model that
+incorporates the "intervening opportunities" and "competing destinations"
+frameworks discussed in the spatial interaction literature by incorporating two
+additional terms $A_i$ and $A_j$ which represent accessibility measures at the
+origin and destination locations, respectively. In spatial econometric parlance,
+this approach is equivalent to a spatial lag of X (SLX) model with terms that
+include both origin-centric and destination-centric lagged X variables. 
+
+:::
 
 
 ## References

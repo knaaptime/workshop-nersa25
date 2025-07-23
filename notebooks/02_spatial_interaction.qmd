@@ -1,26 +1,26 @@
 ---
-title: Migration Flows with Graphs, Models, and Spatial Interaction
+title: Migration Graphs and Spatial Interaction
 jupyter: conda-env-nersa25-py
 ---
-
-
 
 ```{python}
 import geopandas as gpd
 import numpy as np
+import networkx as nx
 import pandas as pd
+import statsmodels.formula.api as smf
+from formulaic import Formula
 from geosnap import DataStore
 from geosnap import io as gio
 from libpysal.graph import Graph
-from spint.gravity import Attraction, Doubly, Gravity, Production
-from lonboard import Map, PolygonLayer,ScatterplotLayer, basemap, viz
-from lonboard.experimental import ArcLayer, TripsLayer
+from lonboard import Map, PolygonLayer, ScatterplotLayer, basemap, viz
+from lonboard.experimental import ArcLayer
 from lonboard.layer_extension import BrushingExtension
 from mapclassify.util import get_color_array
-import statsmodels.formula.api as smf
+from spint.gravity import Attraction, Doubly, Gravity, Production
 from statsmodels.api import families
-import networkx as nx
-from formulaic import Formula
+%load_ext watermark
+%watermark -a 'eli knaap'
 ```
 
 ## Demographic & Socioeconomic Data
@@ -562,15 +562,60 @@ out_degree / all_commutes
 ```
 
 
-## Migration Models
+## Spatial Interaction Models
+
+Spatial interaction models are a classic regional science technique for modeling
+flows (migration, commuting, trading, etc). Spatial interaction models try to
+explain these flows between origin and destination as a function of origin
+(push) and destination (pull) factors, attenuated by the cost of traveling
+between them. The PySAL `spint` package implements a custom estimation engine
+designed for fast performance on sparse design matrices (like those typical in
+spatial interaction models), but they can also be fit using conventional
+statistical packages like `statsmodels` albeit with a performance downgrade.
+
+In this model, the dependent variable $y$ is the level of flow between an origin
+and destination. Our `Graph` is based on flows, which means $y$ is the value of
+the "weight" held in `balt_flow_graph`, thus can use the adjacency list as our
+core data structure.
+
+> Describing spatial interaction with an equation has a long and storied
+> history, with Carrothers (1956), Sen and Smith (1995), and Farmer and Oshan
+> (2017), among many others, furnishing point-in-time reviews of this topic in
+> terms of its popular gravity model formulation, whose general form is as
+> follows: 
+ 
+$$F_{ij} = g[O_i, D_j, f(d_{ij})]$$
+
+> where $F_{ij} denotes the flow between origin $i$ and destination $j$ areal
+> units, $O_i$ is some attribute variable(s) quantifying relevant features of
+> origin $i$, $D_j$ is some attribute variable(s) quantifying relevant features
+> of destination $j$, $g$ is some function (frequently multiplicative in form),
+> and $f(d_{ij})$ is some deterrent. The initial functional form resulted in Eq.
+> (7.1) being transformed to a log-linear version and a normally distributed
+> error attached to it for estimation and inference purposes, yielding 
+
+$$ log(F_{ij} + \delta) = log(\kappa) + \alpha log(O_i)  + \beta log(D_j) + \gamma d_{ij} + \epsilon_{ij} $$
+
+> where `log` denotes natural logarithm, $\epsilon_{ij}$ is a normally
+> distributed random error term, $\delta \geq 0$ added to the response variable
+> $F_{ij}$ is a translation parameter needed if any $F_{ij} = 0$, and $\kappa, \alpha, \beta$ and $\gamma$ are linear regression coefficients; sometimes this
+> equation includes $log(d_{ij})$ rather than $d_{ij}$. This specification
+> results in exponents for the $O_i$ and $D_j$ variables when the equation is
+> backtransformed to its multiplicative form. Difficulties associated with this
+> implementation include that $F_{ij}$ often is a count for which many cases are
+> zero (hence the need for $\delta$).
+>
+> --- @griffith2019SpatialInteraction
+
+@getis1991SpatialInteraction @putman1989EffectsSpatial @griffith2019SpatialInteraction @fotheringham1989SpatialInteraction
+
+(as usual, there's an insane Tobler paper on the topic [@tobler1983AlternativeFormulation])
 
 ```{python}
 dc_flow_graph = dc_flow_graph.assign_self_weight(0).eliminate_zeros()
 ```
 
-spatial interaction models are a classic regional science technique for modeling flows (migration, commuting, trading, etc). Spatial interaction models try to explain these flows between origin and destination as a function of origin (push) and destination (pull) factors, attenuated by the cost of traveling between them. The PySAL `spint` package 
 
-In this model, the dependent variable $y$ is the level of flow between an origin and destination. Our `Graph` is based on flows, which means $y$ is the value of the "weight" held in `balt_flow_graph`, thus can use the adjacency list as our core data structure (once again it's easier to remove the intra-tract flows)
 
 ```{python}
 # sparse representation
@@ -688,7 +733,9 @@ dc_interaction = dc_interaction.copy()
 dc_interaction
 ```
 
-## Spatial Interaction with `spint`
+## Using `spint` and `statsmodels`
+
+@liao2025DataDrivenApproach, @oshan2016PrimerWorking, @oshan2021SpatialStructure, @oshan2025GeneralizedAdditive, @rey2021PySALEcosystem, @wilson1967StatisticalTheory
 
 see @oshan2016PrimerWorking for a deeper discussion of spatial interaction models and their implementation details in PySAL
 

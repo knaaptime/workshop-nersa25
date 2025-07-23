@@ -1,3 +1,4 @@
+# "Spatial: Networks, Interaction, & Econometrics for Migration"
 
 NERSA/NARSC Program in Mobility, Migration & Regional Science
 
@@ -47,6 +48,8 @@ edit the notebooks as you like
 
 open source and open science
 
+- pixi & conda
+- jupyter
 - python
 - pysal 
 - geosnap

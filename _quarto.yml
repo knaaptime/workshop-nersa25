@@ -4,7 +4,7 @@ project:
 jupyter: "conda-env-nersa25-py"
 
 execute: 
-  freeze: auto
+  freeze: true
   cache: true
 
 book:
@@ -27,9 +27,9 @@ book:
     - notebooks/01_spatial_graphs.qmd
     - notebooks/02_spatial_interaction.qmd
     - notebooks/03_spatial_dependence.qmd
-  license: CC BY-NC-ND
+  license: CC BY-NC
   search: true
-  repo-url: https://github.com/knaaptime/nersa25/
+  repo-url: https://github.com/knaaptime/workshop-nersa25/
   repo-subdir: docs
   repo-actions: [edit, issue, source]
   sharing: [twitter, linkedin, facebook]
@@ -57,6 +57,6 @@ format:
 
     code-links: 
       - text: Open in Codespaces
-        href: https://codespaces.new/knaaptime/urban_analysis
+        href: https://codespaces.new/knaaptime/workshop-nersa25
         icon: cloud
 

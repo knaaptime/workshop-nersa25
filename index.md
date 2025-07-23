@@ -1,4 +1,3 @@
-
 NERSA/NARSC Program in Mobility, Migration & Regional Science
 
 [![Open in GitHub Codespaces](https://github.com/codespaces/badge.svg)](https://codespaces.new/knaaptime/workshop-nersa25)
@@ -47,6 +46,9 @@ edit the notebooks as you like
 
 open source and open science
 
+- pixi & conda
+- jupyter
+- python
 - python
 - pysal 
 - geosnap
