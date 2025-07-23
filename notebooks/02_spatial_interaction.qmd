@@ -256,7 +256,10 @@ gmap.to_html('dc_flow_orig_orient.html')
 gmap
 ```
 
-the mouseover is keyed on *home* (origin), so the visualiztion shows flows *away* from the selected location. To focus on destinations/inflows, we can reverse the orientation in the ArcLayer
+The mouseover is keyed on *home* (origin), so the visualiztion shows flows
+*away* from the selected location. To focus on destinations/inflows, we can
+reverse the orientation in the ArcLayer. Use control+click and drag in the map
+to change the view angle.
 
 ```{python}
 flows
@@ -302,6 +305,8 @@ gmap.to_html('dc_flow_dest_orient.html')
 gmap
 ```
 
+This map is keyed on *destination*, so mousing over each observation shows flows
+migrating *into* the pointer.
 
 ```{python}
 dc = dc.set_index("geoid")
@@ -584,7 +589,7 @@ core data structure.
 > terms of its popular gravity model formulation, whose general form is as
 > follows: 
  
-$$F_{ij} = g[O_i, D_j, f(d_{ij})]$$
+$$F_{ij} = g[O_i, D_j, f(d_{ij})]$$ {#eq-interaction-general}
 
 > where $F_{ij} denotes the flow between origin $i$ and destination $j$ areal
 > units, $O_i$ is some attribute variable(s) quantifying relevant features of
@@ -594,7 +599,7 @@ $$F_{ij} = g[O_i, D_j, f(d_{ij})]$$
 > (7.1) being transformed to a log-linear version and a normally distributed
 > error attached to it for estimation and inference purposes, yielding 
 
-$$ log(F_{ij} + \delta) = log(\kappa) + \alpha log(O_i)  + \beta log(D_j) + \gamma d_{ij} + \epsilon_{ij} $$
+$$ log(F_{ij} + \delta) = log(\kappa) + \alpha log(O_i)  + \beta log(D_j) + \gamma d_{ij} + \epsilon_{ij} $$ {#eq-interaction-log-linear}
 
 > where `log` denotes natural logarithm, $\epsilon_{ij}$ is a normally
 > distributed random error term, $\delta \geq 0$ added to the response variable
@@ -737,7 +742,16 @@ dc_interaction
 
 @liao2025DataDrivenApproach, @oshan2016PrimerWorking, @oshan2021SpatialStructure, @oshan2025GeneralizedAdditive, @rey2021PySALEcosystem, @wilson1967StatisticalTheory
 
-see @oshan2016PrimerWorking for a deeper discussion of spatial interaction models and their implementation details in PySAL
+see @oshan2016PrimerWorking for a deeper discussion of spatial interaction
+models and their implementation details in PySAL. In thie example, we explore
+the influences of population size, income, and race (at origin and destination
+locations) on the total flow moving between origin and destination. Though this
+is a toy example, this approach combines traditional interaction variables i.e.
+gravity driven by population size) with an inquiry about social inequality.
+Since D.C. is such a famously segregated city, it may be that predominantly
+Black neighbrhoods are greater exporters than importers, like the spatial
+mismatch hypothesis suggests
+[@glaeser2004OpportunitiesRace; @kain1968HousingSegregation; @kain1992SpatialMismatch].
 
 ### Gravity
 

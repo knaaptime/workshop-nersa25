@@ -2,7 +2,7 @@ NERSA/NARSC Program in Mobility, Migration & Regional Science
 
 [![Open in GitHub Codespaces](https://github.com/codespaces/badge.svg)](https://codespaces.new/knaaptime/workshop-nersa25)
 
-## Install and Run
+# Install and Run
 
 To run locally:
 
@@ -28,12 +28,14 @@ edit the notebooks as you like
 - in the bottom panel click the "ports" tab
 - click the "add port" button
   - type 8888
-  - click the URL in the "forwarded address column
+  - ![ports](img/ports.png)
 - click back in the vscode interface
   - click the "terminal" tab in the bottom panel
   - scroll up and copy the *token* string from the URL
+  - ![token](img/token.png)
   - click back into jupyterlab and paste the token
 
+# Schedule
 
 ## Overview
 

@@ -31,9 +31,11 @@ edit the notebooks as you like
 - click the "add port" button
   - type 8888
   - click the URL in the "forwarded address column
+  - ![ports](img/ports.png)
 - click back in the vscode interface
   - click the "terminal" tab in the bottom panel
   - scroll up and copy the *token* string from the URL
+  - ![token](img/token.png)
   - click back into jupyterlab and paste the token
 
 

@@ -32,35 +32,43 @@ some minor modifications because
 
 Approaches for estimating spatial lag models are described in
 @lesage2007KnowledgeSpillovers and @lesage2008SpatialEconometric while error
-models are decribed by @fischer2008ModelingSpatial, the latter two of which use
+models are described by @fischer2008ModelingSpatial, the latter two of which use
 conventional estimation techniques with specialized $W$ matrices based on the
 notion of neighboring origins or neighboring destinations. We explore how to
 conduct these analyses below. For further background, consult
 @fischer2008ModelingSpatial, @lesage2007KnowledgeSpillovers,
 @lesage2008SpatialEconometric, @lesage2010SpatialEconometric,
 @lesage2013SpatialInteraction, @lesage2014WhatRegional,
-@thomas-agnan2014SpatialEconometric @ord1975EstimationMethods.
+@thomas-agnan2014SpatialEconometric and @ord1975EstimationMethods.
 
 ## Spatial Econometric Models
 
-In the following example we will focus on the spatial interaction specificaiton of two workhorse models in spatial econometrics: the "spatial lag" and "spatial error" models. Following the log-linear specification from the prior section, these are given by
+In the following example we will focus on the spatial interaction specification
+of two workhorse models in spatial econometrics: the "spatial lag" and "spatial
+error" models. Following the log-linear specification from the prior section,
+these are given by
 
 ### Spatial Lag
 
 $$ \log(F_{ij} + 
-\delta) =  \log(\kappa) + \rho W\log(F_{ij}+\delta) + \alpha \log(O_i)  + \beta \log(D_j) + \gamma d_{ij} + \epsilon_{ij} $$
+\delta) =  \log(\kappa) + \rho W\log(F_{ij}+\delta) + \alpha \log(O_i)  + \beta \log(D_j) + \gamma d_{ij} + \epsilon_{ij} $$ {#eq-interaction-spatlag}
 
 ### Spatial Error
 
-$$ \log(F_{ij} + 
-\delta) = \log(\kappa) +  \alpha \log(O_i)  + \beta \log(D_j) + \gamma d_{ij} + u $$
+$$
+\begin{gathered}
+\log(F_{ij} + 
+\delta) = \log(\kappa) +  \alpha \log(O_i)  + \beta \log(D_j) + \gamma d_{ij} + u \\
+u = \lambda Wu +\epsilon_{ij}
+\end{gathered}
+$$  {#eq-interaction-spaterr}
 
-$$ u = \lambda Wu +\epsilon_{ij} $$
 
 ## Data Preparation
 
 We will follow the same data processing steps as in the previous sections,
-collecting data for Washington D.C. and converting it into a matrix of flows.
+collecting data for Washington D.C. and converting it into a Graph of flows,
+then merging with additional data from the Census.
 
 ```{python}
 datasets = DataStore()
@@ -182,7 +190,7 @@ contg.explore(
     node_kws=dict(style_kwds=dict(radius=4, color="yellow")),
 )
 l = gpd.GeoDataFrame(geometry=[LineString(dc.loc[focus_tracts].geometry.centroid.get_coordinates()[['x','y']].values)], crs=dc.crs)
-l.explore(m=m, color='gray', style_kwds={'weight':5})
+l.explore(m=m, color='red', style_kwds={'weight':6})
 ```
 
 ### Spatial Graphs for Origin-Destination Flows
@@ -262,7 +270,9 @@ that gives our $y$ variable a distribution like this
 dc_interaction.weight.replace(0,0.08).apply(np.log).hist()
 ```
 
-another common transformation is to add 1 to every observation and take the log of *that*, i.e. take $log(x+1)$
+Another common transformation is to add 1 to every observation and take the log
+of *that*, i.e. take $log(x+1)$ (this is setting $\delta=1$ in
+@eq-interaction-log-linear).
 
 ```{python}
 dc_interaction.weight.apply(np.log1p).hist()
@@ -278,9 +288,9 @@ form = "np.log1p(weight) ~ 1+ np.log1p(n_total_pop_origin) + np.log1p(median_hou
 ```{python}
 f = Formula(form)
 
-# mean-impute missing values and replace any zeros with 0.08 for convenience
+# mean-impute missing values for convenience
 y, x = f.get_model_matrix(
-    dc_interaction.fillna(dc_interaction.mean(numeric_only=True))#.replace(0, 0.08)
+    dc_interaction.fillna(dc_interaction.mean(numeric_only=True))
 )
 ```
 
