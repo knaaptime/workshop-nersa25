@@ -64,6 +64,18 @@ u = \lambda Wu +\epsilon_{ij}
 $$  {#eq-interaction-spaterr}
 
 
+Note there's a sizeable and growing literature focused on the appropriateness of
+different estimation techniques for count-based models, particularly in the
+gravity model context
+[@manning2001EstimatingLog; @santossilva2010ExistenceMaximum; @santossilva2011FurtherSimulation; @silva2006LogGravity].
+For the purpose of this workshop it's sufficient to say that log-linear models
+induce a certain level of bias--and it's important to be aware. However flow
+models also display empirical residual autocorrelation, so nonlinear but
+nonspatial models *also* induce bias (and it's hard to estimate nonlinear
+spatial models). So here we accept one bias in favor of the other for the sake
+of demonstration and concern for spatial effects. Consult the literature for a
+deeper dive.
+
 ## Data Preparation
 
 We will follow the same data processing steps as in the previous sections,

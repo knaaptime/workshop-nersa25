@@ -43,6 +43,8 @@ dc.plot()
 
 ### LODES Data
 
+See the [technical documentation](https://lehd.ces.census.gov/data/lodes/LODES8/LODESTechDoc8.3.pdf)
+
 ```{python}
 dc_flows = pd.read_csv(
     "https://lehd.ces.census.gov/data/lodes/LODES8/dc/od/dc_od_main_JT00_2022.csv.gz",
@@ -233,7 +235,7 @@ src = ScatterplotLayer.from_geopandas(
 )
 
 bounds = PolygonLayer.from_geopandas(
-    dc,
+    dc.to_crs(4326),
     get_fill_color=[255, 255, 255, 200],
     stroked=True,
     line_width_min_pixels=0.5,
@@ -256,7 +258,7 @@ gmap.to_html('dc_flow_orig_orient.html')
 gmap
 ```
 
-The mouseover is keyed on *home* (origin), so the visualiztion shows flows
+The mouseover is keyed on *home* (origin), so the visualization shows flows
 *away* from the selected location. To focus on destinations/inflows, we can
 reverse the orientation in the ArcLayer. Use control+click and drag in the map
 to change the view angle.
@@ -615,6 +617,13 @@ $$ log(F_{ij} + \delta) = log(\kappa) + \alpha log(O_i)  + \beta log(D_j) + \gam
 @getis1991SpatialInteraction @putman1989EffectsSpatial @griffith2019SpatialInteraction @fotheringham1989SpatialInteraction
 
 (as usual, there's an insane Tobler paper on the topic [@tobler1983AlternativeFormulation])
+
+the U.S. International Trade Commission also has a
+[Python statistical package](https://www.usitc.gov/data/gravity/gme.htm) for
+estimating gravity models (though with no emphasis on *space*), as well as a
+nice paper [on different
+estimators](https://www.unescap.org/sites/default/files/6%20-%204.%20Alternative%20Gravity%20Model%20Estimators_0.pdf)
+and their tradeoffs.
 
 ```{python}
 dc_flow_graph = dc_flow_graph.assign_self_weight(0).eliminate_zeros()
