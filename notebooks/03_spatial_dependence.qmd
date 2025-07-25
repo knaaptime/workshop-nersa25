@@ -39,7 +39,8 @@ conduct these analyses below. For further background, consult
 @fischer2008ModelingSpatial, @lesage2007KnowledgeSpillovers,
 @lesage2008SpatialEconometric, @lesage2010SpatialEconometric,
 @lesage2013SpatialInteraction, @lesage2014WhatRegional,
-@thomas-agnan2014SpatialEconometric and @ord1975EstimationMethods.
+@thomas-agnan2014SpatialEconometric, @griffith2017SpatialAutocorrelation and
+@ord1975EstimationMethods.
 
 ## Spatial Econometric Models
 
@@ -140,7 +141,7 @@ What's "near" to a *flow*?
 
 ### Distance Graph
 
-keep only tracts in the dataframe in our flow graph (origins), then get distance between observations with no decay
+As with the conventional models in the previous section, we need the distance between each OD pair as a variable for our model. Again we keep only tracts in the dataframe in our flow graph (origins), then get distance between observations with no decay using a `Graph`
 
 ```{python}
 dc = dc.to_crs(dc.estimate_utm_crs())
@@ -167,7 +168,10 @@ dc_dist_adj = dc_dist.intersection(dc_flow_graph).adjacency
 
 # update with the old values
 dc_dist_adj.update(dc_dist.adjacency)
+```
 
+now create our dataset using the dense matrix 'melted' down into a vector
+```{python}
 dc_interaction["distance"] = dc_dist.sparse.toarray().reshape(-1)
 
 dc_interaction['weight'] = dc_interaction['weight'].astype(int)
@@ -175,6 +179,9 @@ dc_interaction['weight'] = dc_interaction['weight'].astype(int)
 
 
 ### Contiguity Graph
+
+Now we need to relate the origin and destination observations together. To keep
+things simple, we consider the standard contiguity graph.
 
 ```{python}
 contg = Graph.build_contiguity(dc)
@@ -207,10 +214,9 @@ l.explore(m=m, color='red', style_kwds={'weight':6})
 
 ### Spatial Graphs for Origin-Destination Flows
 
-the `contg` Graph encodes flows as neighbors if the origin tracts share a border.
-
-but we need to multiply that graph to get it into the correct dimensions to
-match our flow data. Following @lesage2008SpatialEconometric and
+the `contg` Graph encodes flows as neighbors if the origin tracts share a
+border. But we need to multiply that graph to get it into the correct dimensions
+to match our flow data. Following @lesage2008SpatialEconometric and
 @fischer2008ModelingSpatial we do this via a
 [*Kronecker* product](https://en.wikipedia.org/wiki/Kronecker_product) between
 our flow and contiguity graphs to create the graph ($W$) used in the model.
@@ -230,7 +236,8 @@ In this case observations are neighbors if:
   - destination-centric weights
   - OD-centric weights (union or sum of oW and dW)
 
-take the Kronecker product of the two Graphs, then re-instantiate a new one
+To do this in code, we use `scipy` to take the Kronecker product of the two
+`Graph`s, then re-instantiate a new one.
 
 ```{python}
 kg = Graph.from_sparse(scipy.sparse.kron(dc_flow_graph.transform("b").sparse, contg.sparse))
@@ -246,8 +253,6 @@ kg.n
 dc_interaction.shape[0]
 ```
 
-this is an origin-centric ODW, so to get the destination-centric weights you'd do the transpose of the OD matrix (flow graph) first [@lesage2008SpatialEconometric]
-
 ```{python}
 kg.pct_nonzero
 ```
@@ -259,14 +264,31 @@ contg.pct_nonzero
 ```{python}
 dc_flow_graph.pct_nonzero
 ```
+since our original `Graph` has the origin as its focal observation, this is an origin-centric ODW ($^oW$), so to get the destination-centric weights
+($^dW$) you'd do the transpose of the OD matrix (flow graph) first
+[@lesage2008SpatialEconometric].
 
-row-standardize
+```{python}
+kgd = Graph.from_sparse(scipy.sparse.kron(dc_flow_graph.transform("b").sparse.transpose(), contg.sparse))
+```
+
+```{python}
+kgd.pct_nonzero
+```
+
+row-standardize both origin and destination versions
 
 ```{python}
 kg = kg.transform('r')
 ```
+```{python}
+kgd = kgd.transform('r')
+```
 
-`spreg` will only treat the Graph as a matrix, so the ordering of the sparse representation is all that matters, not the indices/labels; i.e. the Graph has the correct shape and order even though the indices of the Graph are different than those of the observations
+`spreg` will only treat the Graph as a matrix, so the ordering of the sparse
+representation is all that matters, not the indices/labels; i.e. the Graph has
+the correct shape and order even though the indices of the Graph are different
+than those of the observations
 
 ## Main Model Specification
 
@@ -311,7 +333,6 @@ y, x = f.get_model_matrix(
 y
 ```
 
-
 ## Spatial Lag
 
 ### Origin centric weights
@@ -321,7 +342,7 @@ flow_lag = GM_Lag(y=y, x=x, w=kg, robust='white')
 ```
 
 ```{python}
-#| scrolled: true
+#| column: page
 print(flow_lag.summary)
 ```
 
@@ -334,28 +355,15 @@ pd.Series(flow_lag.u.flatten()).hist()
 ```
 
 
-
-
 ### Destination-centric weights
 
-```{python}
-kgd = Graph.from_sparse(scipy.sparse.kron(dc_flow_graph.transform("b").sparse.transpose(), contg.sparse))
-```
-
-```{python}
-kgd = kgd.transform('r')
-```
-
-```{python}
-kgd.pct_nonzero
-```
 
 ```{python}
 dest_flow_lag = GM_Lag(y=y, x=x,  w=kgd)
 ```
 
 ```{python}
-#| scrolled: true
+#| column: page
 print(dest_flow_lag.summary)
 ```
 
@@ -385,6 +393,8 @@ od_flow_lag = GM_Lag(y=y, x=x, w=kg_od)
 ```
 
 ```{python}
+#| column: page
+
 print(od_flow_lag.summary)
 ```
 
@@ -392,9 +402,10 @@ print(od_flow_lag.summary)
 od_flow_lag.output
 ```
 
-
-
-Instead, we could take the sum of the two graphs, in which case you are neighbors when contiguous with *either* origin or destination points (same cardinalities as above), but the strength of the weight is 2x if you neighbor *both* origin and destination.
+Instead, we could take the sum of the two graphs, in which case you are
+neighbors when contiguous with *either* origin or destination points (same
+cardinalities as above), but the strength of the weight is 2x if you neighbor
+*both* origin and destination.
 
 ```{python}
 kg_od = Graph.from_sparse(kg.transform('b').sparse + kgd.transform('b').sparse)
@@ -402,6 +413,8 @@ kg_od = kg_od.transform('r')
 ```
 
 ```{python}
+#| column: page
+
 print(od_flow_lag.summary)
 ```
 
@@ -420,6 +433,8 @@ flow_error_origin = GMM_Error(y=y, x=x, w=kg)
 ```
 
 ```{python}
+#| column: page
+
 print(flow_error_origin.summary)
 ```
 
@@ -435,6 +450,8 @@ flow_error_dest = GMM_Error(y=y, x=x, w=kgd)
 ```
 
 ```{python}
+#| column: page
+
 print(flow_error_dest.summary)
 ```
 
@@ -450,6 +467,8 @@ flow_error_od = GMM_Error(y=y, x=x, w=kg_od)
 ```
 
 ```{python}
+#| column: page
+
 print(flow_error_od.summary)
 ```
 
@@ -466,7 +485,8 @@ frameworks discussed in the spatial interaction literature by incorporating two
 additional terms $A_i$ and $A_j$ which represent accessibility measures at the
 origin and destination locations, respectively. In spatial econometric parlance,
 this approach is equivalent to a spatial lag of X (SLX) model with terms that
-include both origin-centric and destination-centric lagged X variables. 
+include both origin-centric and destination-centric lagged X variables
+[@lesage2016SpatialRegressionBased].
 
 :::
 

@@ -211,7 +211,9 @@ g_rook.explore(
 ```
 
 ```{python}
-cap = gpd.tools.geocode("the national mall, washington d.c.").to_crs(dc.crs)
+cap = gpd.tools.geocode(
+    "the national mall, washington d.c.", user_agent="nersa-workshop", timeout=20
+).to_crs(dc.crs)
 ```
 
 ```{python}

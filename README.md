@@ -1,5 +1,7 @@
 # "Spatial: Networks, Interaction, & Econometrics for Migration"
 
+![D.C. Commutes](img/commutes.png)
+
 NERSA/NARSC Program in Mobility, Migration & Regional Science
 
 [![Open in GitHub Codespaces](https://github.com/codespaces/badge.svg)](https://codespaces.new/knaaptime/workshop-nersa25)
@@ -39,14 +41,18 @@ edit the notebooks as you like
   - click back into jupyterlab and paste the token
 
 
-## Overview
+## Schedule
+
+[![Open in GitHub Codespaces](https://github.com/codespaces/badge.svg)](https://codespaces.new/knaaptime/workshop-nersa25)
+
+### Overview
 
 - spatial data and analysis in python
 - encoding spatial relationships
 - model flows via spatial interaction
 - model flows via spatial econometric interaction
 
-## Introduction
+### Introduction
 
 open source and open science
 
@@ -56,7 +62,7 @@ open source and open science
 - pysal 
 - geosnap
 
-## spatial data in python
+### spatial data in python
 
 - pandas
 - numpy
@@ -64,7 +70,7 @@ open source and open science
 - geopandas
 - census and lodes
 
-## spatial graphs
+### spatial graphs
 
 encoding relationships between spatial objects
 
@@ -73,7 +79,7 @@ encoding relationships between spatial objects
 - distance
 - flows
 
-## spatial interaction models
+### spatial interaction models
 
 modeling the flow between $o$ and $d$ as a function of push and pull factors
 
@@ -82,7 +88,7 @@ modeling the flow between $o$ and $d$ as a function of push and pull factors
 - production constrained
 - doubly constrained
 
-## spatial econometric models
+### spatial econometric models
 
 multiple graphs: modeling spatial dependence in the flow between $o$ and $d$ via $^oW$, $^dW$, and $^{od}W$
 

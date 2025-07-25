@@ -14,8 +14,6 @@ book:
     - name: "Elijah Knaap"
       email: eknaap@uci.edu
       affiliation: 
-        # - Center for Open Geographical Science
-        # - San Diego State University
           name: University of California, Irvine
           department: Urban Planning & Public Policy
       orcid: 0000-0001-7520-2238
@@ -23,7 +21,7 @@ book:
       degrees: Ph.D
   date: "7/25/2025"
   chapters:
-    - index.md
+    - index.qmd
     - notebooks/01_spatial_graphs.qmd
     - notebooks/02_spatial_interaction.qmd
     - notebooks/03_spatial_dependence.qmd
@@ -44,16 +42,18 @@ format:
     theme: 
       light: 
         - flatly
-        #- custom.scss
         - brand
       dark: 
         - darkly
-        #- custom.scss
         - brand
     fontsize: 1em
     linkcolor: "#4682B4"
-    css: styles.css
+    lightbox: auto
+    fig-responsive: true
+    fig-format: retina
     toc: true
+    citation: true
+    google-scholar: true
 
     code-links: 
       - text: Open in Codespaces

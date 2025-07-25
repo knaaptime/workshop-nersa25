@@ -8,6 +8,7 @@ import geopandas as gpd
 import numpy as np
 import networkx as nx
 import pandas as pd
+import seaborn as sns
 import statsmodels.formula.api as smf
 from formulaic import Formula
 from geosnap import DataStore
@@ -17,6 +18,7 @@ from lonboard import Map, PolygonLayer, ScatterplotLayer, basemap, viz
 from lonboard.experimental import ArcLayer
 from lonboard.layer_extension import BrushingExtension
 from mapclassify.util import get_color_array
+from shapely import LineString
 from spint.gravity import Attraction, Doubly, Gravity, Production
 from statsmodels.api import families
 %load_ext watermark
@@ -119,196 +121,6 @@ dc_centroids = dc_centroids.set_index("geoid").reindex(idx)
 dc_centroids.shape  # matches our Graph.n
 ```
 
-## Visualize
-
-```{python}
-flows = dc_flow_graph.adjacency.reset_index()
-```
-
-```{python}
-flows
-```
-
-```{python}
-# mapping of geoid to (point) geometry
-dc.centroid.head()
-```
-
-```{python}
-flows['focal'] = flows['focal'].replace(dc_centroids['geometry'].to_dict())
-flows['neighbor'] = flows['neighbor'].replace(dc_centroids['geometry'].to_dict())
-```
-
-```{python}
-flows
-```
-
-```{python}
-origins = gpd.GeoSeries(flows.focal).get_coordinates().values
-
-destinations = (
-    gpd.GeoSeries(flows.neighbor).get_coordinates().values
-)
-```
-
-```{python}
-origins
-```
-
-```{python}
-from shapely import LineString
-```
-
-```{python}
-LineString([flows['focal'][0], flows['neighbor'][0]])
-```
-
-```{python}
-lines = gpd.GeoSeries([LineString([row[1]['focal'], row[1]['neighbor']]) for row in flows.iterrows()], crs=4326)
-```
-
-```{python}
-flow_lines =gpd.GeoDataFrame(flows['weight'], geometry=lines)
-```
-
-```{python}
-flow_lines
-```
-
-```{python}
-lines.explore()
-```
-
-
-```{python}
-viz(flow_lines)
-```
-
-```{python}
-dc_flow_graph.adjacency
-```
-
-```{python}
-flow_lines[['weight', 'geometry']]
-```
-
-```{python}
-brushing_extension = BrushingExtension()
-brushing_radius = 300
-
-arc_layer = ArcLayer(
-    table=flow_lines[['weight', 'geometry']].to_arrow(),
-    get_width=flow_lines.weight.apply(lambda x: x**.7),
-    get_source_position=origins,
-    get_target_position=destinations,
-    opacity=0.4,
-    pickable=False,
-    extensions=[brushing_extension],
-    brushing_radius=brushing_radius,
-    get_source_color=get_color_array(flow_lines.weight**.7, scheme='fisher_jenks', k=10, cmap='inferno_r'),
-    get_target_color=get_color_array(flow_lines.weight**.7, scheme='fisher_jenks', k=10, cmap='inferno_r')
-)
-
-source_gdf = gpd.GeoDataFrame(geometry=flows["focal"], crs=4326)
-target_gdf = gpd.GeoDataFrame(geometry=flows["neighbor"], crs=4326)
-
-tgt = ScatterplotLayer.from_geopandas(
-    target_gdf,
-    radius_scale=30,
-    pickable=True,
-    stroked=False,
-    filled=True,
-    line_width_min_pixels=2,
-    extensions=[brushing_extension],
-    brushing_radius=brushing_radius,
-)
-
-src = ScatterplotLayer.from_geopandas(
-    source_gdf,
-    radius_scale=15,
-    pickable=False,
-    stroked=False,
-    filled=True,
-    line_width_min_pixels=2,
-    extensions=[brushing_extension],
-    brushing_radius=brushing_radius,
-)
-
-bounds = PolygonLayer.from_geopandas(
-    dc.to_crs(4326),
-    get_fill_color=[255, 255, 255, 200],
-    stroked=True,
-    line_width_min_pixels=0.5,
-    pickable=False,
-    opacity=0.3
-)
-
-ogb = ScatterplotLayer.from_geopandas(
-    source_gdf,
-    get_fill_color=[255, 255, 255, 200],
-    stroked=True,
-    line_width_min_pixels=0.5,
-    pickable=False,
-)
-
-gmap = Map(layers=[bounds, src, tgt, arc_layer,ogb], picking_radius=500)
-gmap.to_html('dc_flow_orig_orient.html')
-
-
-gmap
-```
-
-The mouseover is keyed on *home* (origin), so the visualization shows flows
-*away* from the selected location. To focus on destinations/inflows, we can
-reverse the orientation in the ArcLayer. Use control+click and drag in the map
-to change the view angle.
-
-```{python}
-flows
-```
-
-```{python}
-dest_graph = Graph.from_adjacency(dc_flows,
-    focal_col="w_tr_geocode",
-    neighbor_col="h_tr_geocode",
-    weight_col="S000",
-)
-
-dest_graph_flows = dest_graph.adjacency.reset_index()
-
-dest_graph_flows['focal'] = dest_graph_flows['focal'].replace(dc_centroids['geometry'].to_dict())
-dest_graph_flows['neighbor'] = dest_graph_flows['neighbor'].replace(dc_centroids['geometry'].to_dict())
-
-dest_lines = gpd.GeoSeries([LineString([row[1]['focal'], row[1]['neighbor']]) for row in dest_graph_flows.iterrows()], crs=4326)
-dest_lines =gpd.GeoDataFrame(dest_graph_flows['weight'], geometry=dest_lines)
-
-origins = gpd.GeoSeries(dest_graph_flows.focal).get_coordinates().values
-
-destinations = (
-    gpd.GeoSeries(dest_graph_flows.neighbor).get_coordinates().values
-)
-
-arc_layer = ArcLayer(
-    table=dest_lines[['weight', 'geometry']].to_arrow(),
-    get_width=dest_lines.weight.apply(lambda x: x**.7),
-    get_source_position=origins,
-    get_target_position=destinations,
-    opacity=0.4,
-    pickable=False,
-    extensions=[brushing_extension],
-    brushing_radius=brushing_radius,
-    get_source_color=get_color_array(dest_lines.weight**.8, scheme='fisher_jenks', k=10, cmap='inferno_r'),
-    get_target_color=get_color_array(dest_lines.weight**.6, scheme='fisher_jenks', k=10, cmap='inferno_r')
-)
-gmap = Map(layers=[bounds, src, tgt, arc_layer,ogb], picking_radius=500)
-
-gmap.to_html('dc_flow_dest_orient.html')
-
-gmap
-```
-
-This map is keyed on *destination*, so mousing over each observation shows flows
-migrating *into* the pointer.
 
 ```{python}
 dc = dc.set_index("geoid")
@@ -475,7 +287,6 @@ all_commutes.sum()
 ```
 
 ```{python}
-import seaborn as sns
 sns.heatmap(dc_flow_graph.sparse.todense())
 ```
 
@@ -492,6 +303,11 @@ in_degree.sum()
 in_degree.hist(bins=20)
 ```
 
+## Visualization
+
+### Mapping Graph Metrics
+
+mapping out-degree shows exports/out-migration
 
 ```{python}
 dc.join(out_degree, how="left").explore(
@@ -503,16 +319,7 @@ dc.join(out_degree, how="left").explore(
 )
 ```
 
-```{python}
-dc.join(in_degree, how="left").explore(
-    "in_degree",
-    style_kwds={"weight": 0.5},
-    linewidth=0.5,
-    tiles="cartodb positron",
-    tooltip="in_degree",
-    scheme="fisherjenks",
-)
-```
+out migration as a share of all change
 
 ```{python}
 dc.join((out_degree / all_commutes).rename("out_share"), how="left").plot(
@@ -525,6 +332,20 @@ dc.join((out_degree / all_commutes).rename("out_share"), how="left").plot(
     cmap="RdBu_r",
 )
 ```
+
+in-degree measures imports/immigration
+
+```{python}
+dc.join(in_degree, how="left").explore(
+    "in_degree",
+    style_kwds={"weight": 0.5},
+    linewidth=0.5,
+    tiles="cartodb positron",
+    tooltip="in_degree",
+    scheme="fisherjenks",
+)
+```
+
 
 in-migration as a share of all change
 
@@ -551,6 +372,8 @@ dc.join(
 (out_degree / all_commutes).hist()
 ```
 
+net immigration
+
 ```{python}
 dc.join(((in_degree - out_degree) / degree).rename("diff"), how="left").plot(
     "diff",
@@ -568,6 +391,206 @@ dc.join(((in_degree - out_degree) / degree).rename("diff"), how="left").plot(
 out_degree / all_commutes
 ```
 
+### Mapping with Three Dimensions
+
+the flow graph is difficult to visualize because (1) it's so dense (there's so
+many lines they obscure one another), and (2) the flows are bi-directional (so
+they lay on top of each other). With a bit more work, we can get a better
+visualization via `lonboard`. Using the `Graph` and a little geopandas
+knowledge, we can get our data in good shape quickly.
+
+```{python}
+flows = dc_flow_graph.adjacency.reset_index()
+```
+
+```{python}
+flows
+```
+
+```{python}
+# mapping of geoid to (point) geometry
+dc.centroid.head()
+```
+
+start by creating a set of lines representing flows
+
+```{python}
+flows['focal'] = flows['focal'].replace(dc_centroids['geometry'].to_dict())
+flows['neighbor'] = flows['neighbor'].replace(dc_centroids['geometry'].to_dict())
+```
+
+```{python}
+flows
+```
+
+```{python}
+origins = gpd.GeoSeries(flows.focal).get_coordinates().values
+
+destinations = (
+    gpd.GeoSeries(flows.neighbor).get_coordinates().values
+)
+```
+
+```{python}
+origins
+```
+
+```{python}
+LineString([flows['focal'][0], flows['neighbor'][0]])
+```
+
+```{python}
+lines = gpd.GeoSeries([LineString([row[1]['focal'], row[1]['neighbor']]) for row in flows.iterrows()], crs=4326)
+```
+
+```{python}
+flow_lines =gpd.GeoDataFrame(flows['weight'], geometry=lines)
+```
+
+```{python}
+flow_lines
+```
+
+this is the best we can do with a generic `explore`
+
+```{python}
+lines.explore()
+```
+
+piping the same dataset into `lonboard`, we get basically the same thing
+
+```{python}
+viz(flow_lines)
+```
+
+```{python}
+dc_flow_graph.adjacency
+```
+
+```{python}
+flow_lines[['weight', 'geometry']]
+```
+
+lets do better
+
+```{python}
+brushing_extension = BrushingExtension()
+brushing_radius = 300
+
+arc_layer = ArcLayer(
+    table=flow_lines[['weight', 'geometry']].to_arrow(),
+    get_width=flow_lines.weight.apply(lambda x: x**.7),
+    get_source_position=origins,
+    get_target_position=destinations,
+    opacity=0.4,
+    pickable=False,
+    extensions=[brushing_extension],
+    brushing_radius=brushing_radius,
+    get_source_color=get_color_array(flow_lines.weight**.7, scheme='fisher_jenks', k=10, cmap='inferno_r'),
+    get_target_color=get_color_array(flow_lines.weight**.7, scheme='fisher_jenks', k=10, cmap='inferno_r')
+)
+
+source_gdf = gpd.GeoDataFrame(geometry=flows["focal"], crs=4326)
+target_gdf = gpd.GeoDataFrame(geometry=flows["neighbor"], crs=4326)
+
+tgt = ScatterplotLayer.from_geopandas(
+    target_gdf,
+    radius_scale=30,
+    pickable=True,
+    stroked=False,
+    filled=True,
+    line_width_min_pixels=2,
+    extensions=[brushing_extension],
+    brushing_radius=brushing_radius,
+)
+
+src = ScatterplotLayer.from_geopandas(
+    source_gdf,
+    radius_scale=15,
+    pickable=False,
+    stroked=False,
+    filled=True,
+    line_width_min_pixels=2,
+    extensions=[brushing_extension],
+    brushing_radius=brushing_radius,
+)
+
+bounds = PolygonLayer.from_geopandas(
+    dc.to_crs(4326),
+    get_fill_color=[255, 255, 255, 200],
+    stroked=True,
+    line_width_min_pixels=0.5,
+    pickable=False,
+    opacity=0.3
+)
+
+ogb = ScatterplotLayer.from_geopandas(
+    source_gdf,
+    get_fill_color=[255, 255, 255, 200],
+    stroked=True,
+    line_width_min_pixels=0.5,
+    pickable=False,
+)
+
+gmap = Map(layers=[bounds, src, tgt, arc_layer,ogb], picking_radius=500)
+gmap.to_html('dc_flow_orig_orient.html')
+
+
+gmap
+```
+
+The mouseover is keyed on *home* (origin), so the visualization shows flows
+*away* from the selected location. To focus on destinations/inflows, we can
+reverse the orientation in the ArcLayer. Use control+click and drag in the map
+to change the view angle.
+
+```{python}
+flows
+```
+
+```{python}
+dest_graph = Graph.from_adjacency(dc_flows,
+    focal_col="w_tr_geocode",
+    neighbor_col="h_tr_geocode",
+    weight_col="S000",
+)
+
+dest_graph_flows = dest_graph.adjacency.reset_index()
+
+dest_graph_flows['focal'] = dest_graph_flows['focal'].replace(dc_centroids['geometry'].to_dict())
+dest_graph_flows['neighbor'] = dest_graph_flows['neighbor'].replace(dc_centroids['geometry'].to_dict())
+
+dest_lines = gpd.GeoSeries([LineString([row[1]['focal'], row[1]['neighbor']]) for row in dest_graph_flows.iterrows()], crs=4326)
+dest_lines =gpd.GeoDataFrame(dest_graph_flows['weight'], geometry=dest_lines)
+
+origins = gpd.GeoSeries(dest_graph_flows.focal).get_coordinates().values
+
+destinations = (
+    gpd.GeoSeries(dest_graph_flows.neighbor).get_coordinates().values
+)
+
+arc_layer = ArcLayer(
+    table=dest_lines[['weight', 'geometry']].to_arrow(),
+    get_width=dest_lines.weight.apply(lambda x: x**.7),
+    get_source_position=origins,
+    get_target_position=destinations,
+    opacity=0.4,
+    pickable=False,
+    extensions=[brushing_extension],
+    brushing_radius=brushing_radius,
+    get_source_color=get_color_array(dest_lines.weight**.8, scheme='fisher_jenks', k=10, cmap='inferno_r'),
+    get_target_color=get_color_array(dest_lines.weight**.6, scheme='fisher_jenks', k=10, cmap='inferno_r')
+)
+gmap = Map(layers=[bounds, src, tgt, arc_layer,ogb], picking_radius=500)
+
+gmap.to_html('dc_flow_dest_orient.html')
+
+gmap
+```
+
+This map is keyed on *destination*, so mousing over each observation shows flows
+migrating *into* the pointer.
+
 
 ## Spatial Interaction Models
 
@@ -582,7 +605,7 @@ statistical packages like `statsmodels` albeit with a performance downgrade.
 
 In this model, the dependent variable $y$ is the level of flow between an origin
 and destination. Our `Graph` is based on flows, which means $y$ is the value of
-the "weight" held in `balt_flow_graph`, thus can use the adjacency list as our
+the "weight" held in `dc_flow_graph`, thus can use the adjacency list as our
 core data structure.
 
 > Describing spatial interaction with an equation has a long and storied
@@ -593,7 +616,7 @@ core data structure.
  
 $$F_{ij} = g[O_i, D_j, f(d_{ij})]$$ {#eq-interaction-general}
 
-> where $F_{ij} denotes the flow between origin $i$ and destination $j$ areal
+> where $F_{ij}$ denotes the flow between origin $i$ and destination $j$ areal
 > units, $O_i$ is some attribute variable(s) quantifying relevant features of
 > origin $i$, $D_j$ is some attribute variable(s) quantifying relevant features
 > of destination $j$, $g$ is some function (frequently multiplicative in form),
@@ -614,11 +637,12 @@ $$ log(F_{ij} + \delta) = log(\kappa) + \alpha log(O_i)  + \beta log(D_j) + \gam
 >
 > --- @griffith2019SpatialInteraction
 
-@getis1991SpatialInteraction @putman1989EffectsSpatial @griffith2019SpatialInteraction @fotheringham1989SpatialInteraction
-
-(as usual, there's an insane Tobler paper on the topic [@tobler1983AlternativeFormulation])
-
-the U.S. International Trade Commission also has a
+Given spatial interaction modeling's rich history in regional science, there are
+many good resources, both old and new, including @getis1991SpatialInteraction,
+@putman1989EffectsSpatial, @griffith2019SpatialInteraction, and
+@fotheringham1989SpatialInteraction (as usual, there's an insane Tobler paper on
+the topic [@tobler1983AlternativeFormulation]). The U.S. International Trade
+Commission also has a
 [Python statistical package](https://www.usitc.gov/data/gravity/gme.htm) for
 estimating gravity models (though with no emphasis on *space*), as well as a
 nice paper [on different
@@ -629,7 +653,7 @@ and their tradeoffs.
 dc_flow_graph = dc_flow_graph.assign_self_weight(0).eliminate_zeros()
 ```
 
-
+we use the flow graph as the basis for our new data structure
 
 ```{python}
 # sparse representation
@@ -638,6 +662,8 @@ dc_interaction = (
 )
 dc_interaction
 ```
+
+but we actually need the full dense representation (*with* the zeroes)
 
 ```{python}
 # for our dataset we want the full dense matrix
@@ -651,7 +677,9 @@ dc_interaction = dc_interaction.reset_index()
 dc_interaction
 ```
 
-in spatial interaction terms focal=origin and neighbor=destination, so we can attach attributes of origins and destinations by doing left-joins on the y-variable successively based on focal, then neighbor
+in spatial interaction terms focal=origin and neighbor=destination, so we can
+attach attributes of origins and destinations by doing left-joins on the
+y-variable successively based on focal, then neighbor
 
 ```{python}
 # first merge origin attributes
@@ -683,7 +711,10 @@ dc_interaction[
 ]
 ```
 
-for a spatial interaction model we also need *another* Graph that measures the distance between observations. There are many ways to do this, but the easiest is to use a distance band weight where all observations are guaranteed to lie within the threshold (giving us a pairwise matrix)
+for a spatial interaction model we also need *another* Graph that measures the
+distance between observations. There are many ways to do this, but the easiest
+is to use a distance band weight where all observations are guaranteed to lie
+within the threshold (giving us a pairwise matrix)
 
 ```{python}
 dc = dc.to_crs(dc.estimate_utm_crs())
@@ -749,17 +780,23 @@ dc_interaction
 
 ## Using `spint` and `statsmodels`
 
-@liao2025DataDrivenApproach, @oshan2016PrimerWorking, @oshan2021SpatialStructure, @oshan2025GeneralizedAdditive, @rey2021PySALEcosystem, @wilson1967StatisticalTheory
+The `spint` package implements a family of SI models in the
+@wilson1967StatisticalTheory via a generalized linear modeling framework with a
+Poisson link function, which is generally viewed as a statistically-sound
+approach
+[@liao2025DataDrivenApproach; @oshan2016PrimerWorking; @oshan2021SpatialStructure; @oshan2025GeneralizedAdditive; @rey2021PySALEcosystem].
+See @oshan2016PrimerWorking for a deeper discussion of spatial interaction
+models and their implementation details in PySAL. You can also fit the same
+models using `statsmodels` for more verbose output, albeit at a performance
+cost.
 
-see @oshan2016PrimerWorking for a deeper discussion of spatial interaction
-models and their implementation details in PySAL. In thie example, we explore
-the influences of population size, income, and race (at origin and destination
-locations) on the total flow moving between origin and destination. Though this
-is a toy example, this approach combines traditional interaction variables i.e.
-gravity driven by population size) with an inquiry about social inequality.
-Since D.C. is such a famously segregated city, it may be that predominantly
-Black neighbrhoods are greater exporters than importers, like the spatial
-mismatch hypothesis suggests
+In thie example, we explore the influences of population size, income, and race
+(at origin and destination locations) on the total flow moving between origin
+and destination. Though this is a toy example, this approach combines
+traditional interaction variables i.e. gravity driven by population size) with
+an inquiry about social inequality. Since D.C. is such a famously segregated
+city, it may be that predominantly Black neighbrhoods are greater exporters than
+importers, like the spatial mismatch hypothesis suggests
 [@glaeser2004OpportunitiesRace; @kain1968HousingSegregation; @kain1992SpatialMismatch].
 
 ### Gravity
